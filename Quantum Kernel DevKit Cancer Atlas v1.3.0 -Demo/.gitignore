@@ -1,0 +1,27 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+dist/
+build/
+*.spec
+StartDevKit*/
+.streamlit/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# Ignore all cache/data by default…
+cache/**
+data/**
+
+# …but keep only the small demo artifacts via LFS
+!cache/**/*.parquet
+!data/**/*.parquet
+!cache/**/*.feather
+!data/**/*.feather
+!cache/**/*.arrow
+!data/**/*.arrow

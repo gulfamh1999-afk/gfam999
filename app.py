@@ -80,15 +80,53 @@ def canonical_label(name: str) -> str:
 # ---------------- Utilities ----------------
 def _pretty_name(s): return re.sub(r"_+", " ", s)
 
+def _looks_like_umap_df(df: pd.DataFrame) -> bool:
+    cols = set(c.lower() for c in df.columns)
+    has_xyz = {"x","y","z"}.issubset(cols)
+    has_metrics = any(c in cols for c in ["ic50","quantum_minima","q_mean","q_mean".upper(),"ic50_rank"])
+    # treat as UMAP if it has xyz but no metrics
+    return has_xyz and not has_metrics
+
+def _find_non_umap_parquet(folder: str) -> str | None:
+    """Prefer a parquet in folder that is NOT an umap file by name."""
+    if not os.path.isdir(folder):
+        return None
+    pars = [p for p in os.listdir(folder) if p.lower().endswith(".parquet")]
+    if not pars:
+        return None
+    # hard preference order: filenames without 'umap'
+    non_umap = [p for p in pars if "umap" not in p.lower()]
+    # mild preference for 'table','joined','cache','data'
+    def score(name: str) -> int:
+        n = name.lower()
+        s = 0
+        if "umap" in n: s -= 10
+        for kw in ("table","joined","cache","data","scores","drug"):
+            if kw in n: s += 2
+        # prefer larger-looking names (heuristic)
+        s += len(n) // 10
+        return s
+    candidates = non_umap if non_umap else pars
+    candidates = sorted(candidates, key=score, reverse=True)
+    return os.path.join(folder, candidates[0]) if candidates else None
+
 @st.cache_data(show_spinner=False)
 def _list_cohort_files(root):
+    """Return (folder_name, parquet_path) preferring non-UMAP parquets."""
     out = []
     if not os.path.isdir(root): return out
     for d in os.listdir(root):
         sub = os.path.join(root, d)
-        if os.path.isdir(sub):
+        if not os.path.isdir(sub): 
+            continue
+        chosen = _find_non_umap_parquet(sub)
+        if chosen is None:
+            # fallback to any parquet (may be UMAP; loader will re-route)
             pars = [p for p in os.listdir(sub) if p.lower().endswith(".parquet")]
-            if pars: out.append((d, os.path.join(sub, pars[0])))
+            if pars:
+                chosen = os.path.join(sub, pars[0])
+        if chosen:
+            out.append((d, chosen))
     return sorted(out, key=lambda x: x[0].lower())
 
 def _alias_into(df, target: str, candidates: list[str]):
@@ -101,13 +139,25 @@ def _alias_into(df, target: str, candidates: list[str]):
             src = lower_cols[cand.lower()]
             df[target] = pd.to_numeric(df[src], errors="coerce")
             return
-    # If still missing, ensure the column exists
     if target not in df.columns:
         df[target] = np.nan
 
 @st.cache_data(show_spinner=False)
 def _load_cache(path):
-    df = pd.read_parquet(path)
+    # read raw
+    raw = pd.read_parquet(path)
+
+    # If we accidentally got the UMAP parquet, auto-switch to sibling non-UMAP parquet
+    if _looks_like_umap_df(raw):
+        sibling = _find_non_umap_parquet(os.path.dirname(path))
+        if sibling and os.path.abspath(sibling) != os.path.abspath(path):
+            try:
+                raw2 = pd.read_parquet(sibling)
+                raw = raw2
+            except Exception:
+                pass
+
+    df = raw.copy()
 
     # Ensure required columns exist
     need = ["DepMap_ID","DRUG_NAME","quantum_minima","ic50","ic50_rank","Q_MEAN","n"]
@@ -124,14 +174,16 @@ def _load_cache(path):
     for c in ["quantum_minima","ic50","ic50_rank","Q_MEAN","n"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # 🔧 Fix n: fill/clamp to ≥1
+    # Fix n: fill/clamp to ≥1
     df["n"] = df["n"].fillna(1).astype(float)
     df.loc[df["n"] < 1, "n"] = 1
     df["n"] = df["n"].astype(int)
 
     # Clean text columns
-    df["DepMap_ID"] = df["DepMap_ID"].astype(str)
-    df["DRUG_NAME"] = df["DRUG_NAME"].astype(str)
+    if "DepMap_ID" in df.columns:
+        df["DepMap_ID"] = df["DepMap_ID"].astype(str)
+    if "DRUG_NAME" in df.columns:
+        df["DRUG_NAME"] = df["DRUG_NAME"].astype(str)
 
     return df
 
@@ -497,8 +549,7 @@ if st.session_state.get("cell_q", ""):
 
 dfv = dfv[mask].copy()
 if dfv.empty:
-    st.warning("No rows match the current filters for this cohort. "
-               "Filters have been relaxed to show all rows. Try lowering ‘Min. samples per drug (n)’ to 1.")
+    st.warning("No rows match the current filters for this cohort. Filters have been relaxed to show all rows.")
     dfv = df.copy()
 
 # ---------- Cohort diagnostics ----------
@@ -509,7 +560,8 @@ with st.expander("Cohort diagnostics"):
         "non_null_ic50": int(dfv["ic50"].notna().sum()),
         "non_null_qmin": int(dfv["quantum_minima"].notna().sum()),
         "non_null_ic50_rank": int(dfv["ic50_rank"].notna().sum()),
-        "unique_drugs": int(dfv["DRUG_NAME"].nunique())
+        "unique_drugs": int(dfv["DRUG_NAME"].nunique()),
+        "source_path": path_by_label[cohort]
     })
     st.write("Head:", dfv.head(5))
 
@@ -570,8 +622,7 @@ with colR:
 
 # ---------------- Scatter ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Scatter — compare measures (subsampled)</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
-plot_df = dfv.copy()
-plot_df = plot_df.dropna(subset=["quantum_minima","ic50"])
+plot_df = dfv.dropna(subset=["quantum_minima","ic50"]).copy()
 if len(plot_df) >= 10:
     plot_df = plot_df.sample(min(len(plot_df), MAX_SCATTER), random_state=42)
     plot_df["winner"] = np.where(
@@ -594,6 +645,9 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------- Topographic UMAP ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Topographic UMAP — high sensitivity</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
+
+def _umap_path_for_label(label: str) -> str:
+    return _umap_path_for(label)
 
 emb = _load_or_build_umap_cached(cohort)
 if emb is None or emb.empty:

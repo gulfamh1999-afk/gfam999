@@ -761,15 +761,25 @@ if len(plot_df) >= 10:
         title="Lower-left is best; color shows which metric wins per row",
     )
     fig.update_traces(marker=dict(size=7, opacity=0.9, line=dict(width=0)))
-    # DARK-friendly plotly settings:
+    # Always-white background
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        template="simple_white",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
         margin=dict(l=0,r=0,t=40,b=0),
         legend_title_text=""
     )
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
+
+    # Mobile/desktop zoom enabled
+    config_scatter = {
+        "scrollZoom": True,
+        "displaylogo": False,
+        "responsive": True,
+        "doubleClick": "reset"
+    }
+    st.plotly_chart(fig, use_container_width=True, config=config_scatter)
 else:
     st.info("Not enough rows with both minima and IC50 to plot.")
 st.markdown('</div>', unsafe_allow_html=True)
@@ -837,18 +847,39 @@ else:
             showlegend=False,
         ))
 
-    # DARK-friendly layout for 3D plot
+    # Always-white background for 3D scene
     fig3d.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
+        template="simple_white",
+        paper_bgcolor="white",
         margin=dict(l=0, r=0, t=40, b=0),
-        legend_title_text=""
+        legend_title_text="",
+        scene=dict(
+            bgcolor="white",
+            xaxis=dict(showbackground=True, backgroundcolor="white",
+                       gridcolor="rgba(0,0,0,0.1)", zerolinecolor="rgba(0,0,0,0.25)"),
+            yaxis=dict(showbackground=True, backgroundcolor="white",
+                       gridcolor="rgba(0,0,0,0.1)", zerolinecolor="rgba(0,0,0,0.25)"),
+            zaxis=dict(showbackground=True, backgroundcolor="white",
+                       gridcolor="rgba(0,0,0,0.1)", zerolinecolor="rgba(0,0,0,0.25)"),
+            dragmode="orbit"
+        )
     )
 
     # Legend card on the RIGHT
     col_plot, col_info = st.columns([0.70, 0.30], gap="large")
     with col_plot:
-        st.plotly_chart(fig3d, use_container_width=True)
+        # Mobile/desktop zoom tools ON (pinch + modebar)
+        config_3d = {
+            "scrollZoom": True,                  # pinch zoom (mobile) / wheel (desktop)
+            "displaylogo": False,
+            "responsive": True,
+            "doubleClick": "reset",
+            "displayModeBar": True,
+            "modeBarButtonsToAdd": [
+                "zoom3d", "pan3d", "orbitRotation", "resetCameraDefault3d", "resetCameraLastSave3d", "hoverClosest3d"
+            ]
+        }
+        st.plotly_chart(fig3d, use_container_width=True, config=config_3d)
     with col_info:
         st.markdown(
             f"""

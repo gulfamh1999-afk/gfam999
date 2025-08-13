@@ -49,7 +49,7 @@ def header_ratios_for(title: str):
     else:        M = 10
     return [L, M, R]
 
-# Optional helpers (for true gene-expression UMAP)
+# Optional helpers (gene-expression UMAP)
 try:
     from helpers_demo import load_ccle_meta_expr_cohort, make_umap
     HAS_HELPERS = True
@@ -143,7 +143,6 @@ def _load_cache(path):
                 raw = pd.read_parquet(sibling)
             except Exception:
                 pass
-
     df = raw.copy()
 
     need = ["DepMap_ID","DRUG_NAME","quantum_minima","ic50","ic50_rank","Q_MEAN","n"]
@@ -761,7 +760,6 @@ if len(plot_df) >= 10:
         title="Lower-left is best; color shows which metric wins per row",
     )
     fig.update_traces(marker=dict(size=7, opacity=0.9, line=dict(width=0)))
-    # Always-white background
     fig.update_layout(
         template="simple_white",
         paper_bgcolor="white",
@@ -772,13 +770,7 @@ if len(plot_df) >= 10:
     fig.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
 
-    # Mobile/desktop zoom enabled
-    config_scatter = {
-        "scrollZoom": True,
-        "displaylogo": False,
-        "responsive": True,
-        "doubleClick": "reset"
-    }
+    config_scatter = {"scrollZoom": True, "displaylogo": False, "responsive": True, "doubleClick": "reset"}
     st.plotly_chart(fig, use_container_width=True, config=config_scatter)
 else:
     st.info("Not enough rows with both minima and IC50 to plot.")
@@ -847,7 +839,15 @@ else:
             showlegend=False,
         ))
 
-    # Always-white background for 3D scene
+    # ---- WHITE background + strong topographic grid/cage ----
+    grid = dict(
+        showbackground=True, backgroundcolor="white",
+        showgrid=True,  gridcolor="#d0d7de", gridwidth=1.2,
+        showline=True,  linecolor="#90a4ae", linewidth=2,
+        zeroline=True,  zerolinecolor="#90a4ae", zerolinewidth=1.2,
+        ticks="outside", tickcolor="#b0bec5", tickwidth=1
+    )
+
     fig3d.update_layout(
         template="simple_white",
         paper_bgcolor="white",
@@ -855,28 +855,24 @@ else:
         legend_title_text="",
         scene=dict(
             bgcolor="white",
-            xaxis=dict(showbackground=True, backgroundcolor="white",
-                       gridcolor="rgba(0,0,0,0.1)", zerolinecolor="rgba(0,0,0,0.25)"),
-            yaxis=dict(showbackground=True, backgroundcolor="white",
-                       gridcolor="rgba(0,0,0,0.1)", zerolinecolor="rgba(0,0,0,0.25)"),
-            zaxis=dict(showbackground=True, backgroundcolor="white",
-                       gridcolor="rgba(0,0,0,0.1)", zerolinecolor="rgba(0,0,0,0.25)"),
-            dragmode="orbit"
+            xaxis=grid, yaxis=grid, zaxis=grid,
+            dragmode="orbit",
+            aspectmode="cube",
+            camera=dict(eye=dict(x=1.75, y=1.90, z=1.05))
         )
     )
 
-    # Legend card on the RIGHT
     col_plot, col_info = st.columns([0.70, 0.30], gap="large")
     with col_plot:
-        # Mobile/desktop zoom tools ON (pinch + modebar)
         config_3d = {
-            "scrollZoom": True,                  # pinch zoom (mobile) / wheel (desktop)
+            "scrollZoom": True,
             "displaylogo": False,
             "responsive": True,
             "doubleClick": "reset",
             "displayModeBar": True,
             "modeBarButtonsToAdd": [
-                "zoom3d", "pan3d", "orbitRotation", "resetCameraDefault3d", "resetCameraLastSave3d", "hoverClosest3d"
+                "zoom3d", "pan3d", "orbitRotation",
+                "resetCameraDefault3d", "resetCameraLastSave3d", "hoverClosest3d"
             ]
         }
         st.plotly_chart(fig3d, use_container_width=True, config=config_3d)

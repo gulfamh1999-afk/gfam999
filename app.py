@@ -244,7 +244,6 @@ def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
     if not query: return None
     q = query.strip().lower()
 
-    # 1) exact/canonical hits
     if q in CANONS_LOWER:
         cand = CANONS_LOWER[q]
         return cand if cand in available_labels else None
@@ -252,20 +251,16 @@ def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
         cand = ALIAS_MAP_LOWER[q]
         return cand if cand in available_labels else None
 
-    # 2) startswith / contains
     starts = [lbl for lbl in available_labels if lbl.lower().startswith(q)]
     contains = [lbl for lbl in available_labels if q in lbl.lower() and lbl not in starts]
     if starts: return starts[0]
     if contains: return contains[0]
 
-    # 3) fuzzy over (aliases + canon)
     pool = set(available_labels) | set(COHORT_ALIASES.keys()) | set(COHORT_ALIASES.values())
-    # map pool item -> canonical
     to_canon = {s: canonical_label(s) for s in pool}
     lower_pool = [s.lower() for s in pool]
     fuzzy = get_close_matches(q, lower_pool, n=5, cutoff=0.55)
     if fuzzy:
-        # pick highest SequenceMatcher ratio among distinct canon labels that exist
         best = None; best_score = -1.0
         for f in fuzzy:
             orig = next(s for s in pool if s.lower() == f)
@@ -276,7 +271,6 @@ def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
                     best, best_score = canon, score
         if best:
             return best
-
     return None
 
 def _top_drug_by_metric(df):
@@ -452,7 +446,6 @@ with hdr_mid:
 with hdr_right:
     st.button("Deploy", use_container_width=True)
 
-# The main cohort select (value stored in session_state["cohortpick"])
 row_a, row_b = st.columns([0.72, 0.28])
 with row_a:
     cohort = st.selectbox("Pick cohort", all_labels, index=0, label_visibility="collapsed", key="cohortpick")
@@ -575,7 +568,7 @@ if dfv.empty:
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
-# IC50 shortlist with fallbacks
+# IC50 shortlist with fallbacks (all taken from cached **raw** dataset)
 sub_ic = dfv.dropna(subset=["ic50"]).copy()
 if sub_ic.empty and dfv["ic50_rank"].notna().any():
     sub_ic = dfv.dropna(subset=["ic50_rank"]).copy()
@@ -589,7 +582,7 @@ else:
                       .sort_values("ic50")
                       .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]])
 
-# Quantum shortlist with fallback to Q_MEAN
+# Quantum shortlist with fallback (all taken from cached **raw** dataset)
 sub_qm = dfv.dropna(subset=["quantum_minima"]).copy()
 if sub_qm.empty and dfv["Q_MEAN"].notna().any():
     sub_qm = dfv.dropna(subset=["Q_MEAN"]).copy()
@@ -605,10 +598,18 @@ else:
 
 cL2, cR2 = st.columns(2, gap="large")
 with cL2:
-    st.caption("Best per sample by IC50 (lower is better). Falls back to IC50 rank if raw IC50 is missing.")
+    st.caption(
+        "Best per sample by IC50 (lower is better). "
+        "Values are read directly from the cached raw dataset. "
+        "If an IC50 value is missing in the raw data, its IC50 rank from the raw data is shown."
+    )
     st.dataframe(ic50_rows, use_container_width=True, hide_index=True, height=420)
 with cR2:
-    st.caption("Best per sample by Quantum minima (lower is better). Falls back to Q_MEAN if minima is missing.")
+    st.caption(
+        "Best per sample by Quantum minima (lower is better). "
+        "Values are read directly from the cached raw dataset. "
+        "If a minima value is missing in the raw data, its Q_MEAN from the raw data is shown."
+    )
     st.dataframe(qm_rows, use_container_width=True, hide_index=True, height=420)
 st.markdown('</div>', unsafe_allow_html=True)
 

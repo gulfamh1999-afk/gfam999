@@ -178,9 +178,8 @@ def _umap_path_for(label):
     cohort_dir, safe = _safe_dir_and_name(label)
     return os.path.join(cohort_dir, f"{safe}_umap.parquet")
 
-# ---------- NEW: fallback embedding from cached scores ----------
+# ---------- Fallback embedding from cached scores ----------
 def _fallback_embedding_from_scores(df_scores: pd.DataFrame, label: str) -> pd.DataFrame:
-    """Build a lightweight 3D embedding from cached drug-response features (no helpers required)."""
     if df_scores is None or df_scores.empty or "DepMap_ID" not in df_scores.columns:
         return pd.DataFrame(columns=["x","y","z","label"])
     g = df_scores.groupby("DepMap_ID", dropna=False)
@@ -194,13 +193,11 @@ def _fallback_embedding_from_scores(df_scores: pd.DataFrame, label: str) -> pd.D
         "rows":      g.size()
     }).fillna(0.0)
 
-    # Standardize
     X = feats.to_numpy(float)
     mu = X.mean(axis=0)
     sigma = X.std(axis=0) + 1e-9
     Xz = (X - mu) / sigma
 
-    # 3D SVD projection
     U, s, Vt = np.linalg.svd(Xz, full_matrices=False)
     Z = U[:, :3] * s[:3]
 
@@ -210,10 +207,9 @@ def _fallback_embedding_from_scores(df_scores: pd.DataFrame, label: str) -> pd.D
 
 @st.cache_data(show_spinner=False)
 def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None):
-    """Try, in order: cached UMAP parquet → helpers UMAP → fallback SVD embedding from scores."""
+    """cached UMAP → helpers UMAP → fallback SVD embedding from scores."""
     umap_path = _umap_path_for(label)
 
-    # 1) cached parquet
     if os.path.exists(umap_path):
         try:
             emb = pd.read_parquet(umap_path)
@@ -222,7 +218,6 @@ def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None
         except Exception:
             pass
 
-    # 2) gene-expression UMAP via helpers (if available)
     if HAS_HELPERS:
         try:
             expr, meta, _ = load_ccle_meta_expr_cohort(label)
@@ -245,7 +240,6 @@ def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None
         except Exception:
             pass
 
-    # 3) fallback from cached drug-response scores
     if df_scores is not None and not df_scores.empty:
         emb = _fallback_embedding_from_scores(df_scores, label)
         if not emb.empty:
@@ -256,7 +250,6 @@ def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None
                 pass
             return emb, "fallback"
 
-    # give up
     return pd.DataFrame(columns=["x","y","z","label"]), "none"
 
 # ---------------- Analytics helpers ----------------
@@ -282,7 +275,6 @@ def _drug_suggestions(query, all_drugs, limit=30):
     return (starts + contains)[:limit]
 
 def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
-    """Typo-tolerant best match → canonical label in available_labels."""
     if not query: return None
     q = query.strip().lower()
 
@@ -313,7 +305,6 @@ def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
                     best, best_score = canon, score
         if best:
             return best
-
     return None
 
 def _top_drug_by_metric(df):
@@ -424,6 +415,8 @@ def _leaderboard_html(df, value_cols):
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700;800&display=swap');
+
+/* ----- LIGHT (default) ----- */
 .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(255,146,209,0.25), transparent 60%),
@@ -431,44 +424,122 @@ st.markdown("""
     radial-gradient(700px 500px at 30% 100%, rgba(112,104,255,0.22), transparent 60%),
     linear-gradient(135deg, #e3a1ff 0%, #88d1ff 40%, #7ff0d2 70%, #c6a3ff 100%);
   background-attachment: fixed;
+  color: #0b1220;
 }
 .block-container { padding-top: 0.6rem; }
 [data-testid="stSidebar"] { display: none; }
-.header-bar{ position: sticky; top: 0; z-index: 50; backdrop-filter: blur(8px);
+
+.header-bar{
+  position: sticky; top: 0; z-index: 50;
+  backdrop-filter: blur(8px);
   background: linear-gradient(135deg, rgba(227,161,255,.60), rgba(136,209,255,.60), rgba(127,240,210,.60), rgba(198,163,255,.60));
-  padding-bottom: 6px; }
-.glass { background: rgba(255,255,255,0.30); backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.25); border-radius: 18px; padding: 1.1rem 1.2rem;
-  box-shadow: 0 8px 28px rgba(7,10,38,0.18); margin-bottom: 16px; overflow: hidden; }
+  padding-bottom: 6px;
+}
+.glass {
+  background: rgba(255,255,255,0.30);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 18px;
+  padding: 1.1rem 1.2rem;
+  box-shadow: 0 8px 28px rgba(7,10,38,0.18);
+  margin-bottom: 16px; overflow: hidden;
+}
 .chart-spacer { height: 10px; }
+
 .title-wrap { margin: 2px 0 8px 0; }
-.app-title { font-family: "Sora"; font-weight: 800; font-size: clamp(40px, 6.2vw, 64px);
-  line-height: 1.06; letter-spacing: 0.2px; color: #0b1220; text-shadow: 0 2px 16px rgba(255,255,255,0.35); }
+.app-title {
+  font-family: "Sora"; font-weight: 800;
+  font-size: clamp(40px, 6.2vw, 64px);
+  line-height: 1.06; letter-spacing: 0.2px;
+  color: #0b1220;
+  text-shadow: 0 2px 16px rgba(255,255,255,0.35);
+}
 .stApp * { font-family: "Inter"; }
 .app-subtitle { font-family: "Sora"; font-weight: 700; font-size: clamp(18px, 2vw, 26px); color: #0b1220; margin-top: 0.25rem; }
 .loaded-badge { color: #059669; font-weight: 700; }
+
 .menu-wrap { min-width: 260px; max-width: 360px; }
+
 input, textarea, select, .stTextInput>div>div>input, .stSelectbox div[data-baseweb="select"]>div {
-  border-radius: 12px !important; background: rgba(255,255,255,0.75) !important; }
+  border-radius: 12px !important; background: rgba(255,255,255,0.75) !important; color:#0b1220 !important;
+}
 .stSlider>div>div>div>div { background: linear-gradient(90deg, #00e0c6, #7aa7ff) !important; }
 .stSlider [data-baseweb="slider"]>div { background-color: rgba(255,255,255,0.55) !important; }
-button, .stButton>button { border-radius: 12px !important; background: linear-gradient(135deg, #00e0c6, #7aa7ff);
-  border: 0; color: #051018; font-weight: 700; box-shadow: 0 6px 18px rgba(15,110,180,0.25); }
+
+button, .stButton>button {
+  border-radius: 12px !important; background: linear-gradient(135deg, #00e0c6, #7aa7ff);
+  border: 0; color: #051018; font-weight: 700; box-shadow: 0 6px 18px rgba(15,110,180,0.25);
+}
 button:hover, .stButton>button:hover { filter: brightness(1.05); }
-[data-testid="stDataFrame"]{ background: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.55);
-  border-radius: 16px; box-shadow: 0 6px 18px rgba(7,10,38,0.12); overflow: hidden; }
+
+[data-testid="stDataFrame"]{
+  background: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 16px; box-shadow: 0 6px 18px rgba(7,10,38,0.12); overflow: hidden; color:#0b1220;
+}
+[data-testid="stDataFrame"] thead th { color:#0b1220 !important; }
+[data-testid="stDataFrame"] tbody td { color:#0b1220 !important; }
 [data-testid="stDataFrame"] > div > div{ overflow:auto !important; }
+
 .footer { font-size: 12px; color: #0b1220; }
 
-/* small legend card next to the 3D map */
+/* legend card (light) */
 .legend-card {
   font-size: 12.5px; line-height: 1.35;
   background: rgba(255,255,255,0.55);
   border: 1px solid rgba(255,255,255,0.55);
   border-radius: 14px; padding: 10px 12px;
   box-shadow: 0 6px 18px rgba(7,10,38,0.10);
+  color:#0b1220;
 }
 .legend-dot { font-size: 16px; vertical-align: middle; margin-right: 6px; }
+
+/* ----- DARK OVERRIDES ----- */
+@media (prefers-color-scheme: dark) {
+  .stApp {
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
+      radial-gradient(1000px 800px at 110% 10%, rgba(0,179,255,0.16), transparent 60%),
+      radial-gradient(700px 500px at 30% 100%, rgba(98,91,210,0.18), transparent 60%),
+      linear-gradient(135deg, #0d121a 0%, #0f1520 35%, #101a23 70%, #0f1726 100%);
+    color: #eaf0ff;
+  }
+  .header-bar{
+    background: linear-gradient(135deg, rgba(91,67,122,.35), rgba(38,93,128,.35), rgba(36,116,103,.35), rgba(89,66,124,.35));
+  }
+  .app-title { color: #f2f5ff; text-shadow: none; }
+  .app-subtitle { color:#e6ecff; }
+
+  .glass {
+    background: rgba(16,19,28,0.60);
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+    color:#eaf0ff;
+  }
+
+  input, textarea, select, .stTextInput>div>div>input, .stSelectbox div[data-baseweb="select"]>div {
+    background: rgba(20,26,38,0.85) !important; color:#eaf0ff !important; border: 1px solid rgba(255,255,255,0.08) !important;
+  }
+
+  .loaded-badge { color:#34d399; }
+
+  [data-testid="stDataFrame"]{
+    background: rgba(13,18,28,0.75);
+    border: 1px solid rgba(255,255,255,0.08);
+    color:#eaf0ff;
+  }
+  [data-testid="stDataFrame"] thead th { color:#f5f8ff !important; }
+  [data-testid="stDataFrame"] tbody td { color:#eaf0ff !important; }
+
+  .legend-card {
+    background: rgba(20,26,38,0.70);
+    border: 1px solid rgba(255,255,255,0.10);
+    color:#eaf0ff;
+  }
+
+  button, .stButton>button {
+    color:#0a0f18;
+  }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -478,7 +549,6 @@ if not files:
     st.error(f"No caches found in {CACHE_ROOT}. Build them first.")
     st.stop()
 
-# Deduplicate by canonical label; prefer canonical folder name
 path_by_label = {}
 for raw_name, path in files:
     canon = canonical_label(raw_name)
@@ -519,12 +589,10 @@ def _reset_filters(default_n: int):
 
 # ------------- Auto-jump search handler -------------
 def _apply_q_cohort_autojump():
-    """Called when q_cohort changes: typo-tolerant match → switch cohort & clear filters."""
     query = st.session_state.get("q_cohort", "")
     best = _best_cohort_match(query, all_labels)
     if best and st.session_state.get("cohortpick") != best:
         st.session_state["cohortpick"] = best
-        # Show all rows after jump
         st.session_state["min_n"] = 1
         st.session_state["drug_query"] = ""
         st.session_state["drug_pick"] = "(any)"
@@ -536,7 +604,6 @@ with menu:
     st.markdown('<div class="menu-wrap">', unsafe_allow_html=True)
     st.markdown("### Filters")
 
-    # Typo-tolerant search that auto-switches cohorts as you type
     st.text_input(
         "Search cancer type (e.g., LUAD, leukemai, skin cancer)",
         value=st.session_state.get("q_cohort",""),
@@ -559,7 +626,6 @@ with menu:
     if isinstance(_default, float) and np.isnan(_default): _default = 5
     default_n = int(np.clip(_default, 1, _max_n))
 
-    # Clamp existing slider value if it's now out-of-bounds
     if "min_n" in st.session_state:
         try: current = int(st.session_state["min_n"])
         except Exception: current = default_n
@@ -573,11 +639,9 @@ with menu:
     else:
         min_n = st.slider(
             "Min. samples per drug (n)",
-            min_value=1,
-            max_value=int(_max_n),
+            min_value=1, max_value=int(_max_n),
             value=int(st.session_state.get("min_n", default_n)),
-            step=1,
-            key="min_n",
+            step=1, key="min_n",
         )
 
     all_drugs  = sorted(set(df["DRUG_NAME"].dropna().astype(str)))
@@ -622,46 +686,44 @@ if dfv.empty:
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
-# IC50 shortlist with fallbacks (all taken from cached **raw** dataset)
+# IC50 shortlist with fallbacks (read from cached raw dataset)
 sub_ic = dfv.dropna(subset=["ic50"]).copy()
 if sub_ic.empty and dfv["ic50_rank"].notna().any():
     sub_ic = dfv.dropna(subset=["ic50_rank"]).copy()
     sub_ic = sub_ic.sort_values(["DepMap_ID","ic50_rank"], ascending=[True,True])
     ic50_rows = (sub_ic.groupby("DepMap_ID").head(1)
                         .sort_values("ic50_rank")
-                        .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50_rank","n"]])
+                        .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","ic50_rank","n"]]
 else:
     ic50_rows = (sub_ic.sort_values(["DepMap_ID","ic50"], ascending=[True,True])
                       .groupby("DepMap_ID").head(1)
                       .sort_values("ic50")
-                      .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]])
+                      .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]]
 
-# Quantum shortlist with fallback to Q_MEAN (all taken from cached **raw** dataset)
+# Quantum shortlist with fallback to Q_MEAN (read from cached raw dataset)
 sub_qm = dfv.dropna(subset=["quantum_minima"]).copy()
 if sub_qm.empty and dfv["Q_MEAN"].notna().any():
     sub_qm = dfv.dropna(subset=["Q_MEAN"]).copy()
     qm_rows = (sub_qm.sort_values(["DepMap_ID","Q_MEAN"], ascending=[True,True])
                       .groupby("DepMap_ID").head(1)
                       .sort_values("Q_MEAN")
-                      .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","Q_MEAN","n"]])
+                      .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","Q_MEAN","n"]]
 else:
     qm_rows = (sub_qm.sort_values(["DepMap_ID","quantum_minima"], ascending=[True,True])
                      .groupby("DepMap_ID").head(1)
                      .sort_values("quantum_minima")
-                     .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","quantum_minima","Q_MEAN","n"]])
+                     .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","quantum_minima","Q_MEAN","n"]]
 
 cL2, cR2 = st.columns(2, gap="large")
 with cL2:
     st.caption(
-        "Best per sample by IC50 (lower is better). "
-        "Values are read directly from the cached raw dataset. "
+        "Best per sample by IC50 (lower is better). Values are read directly from the cached raw dataset. "
         "If an IC50 value is missing in the raw data, its IC50 rank from the raw data is shown."
     )
     st.dataframe(ic50_rows, use_container_width=True, hide_index=True, height=420)
 with cR2:
     st.caption(
-        "Best per sample by Quantum minima (lower is better). "
-        "Values are read directly from the cached raw dataset. "
+        "Best per sample by Quantum minima (lower is better). Values are read directly from the cached raw dataset. "
         "If a minima value is missing in the raw data, its Q_MEAN from the raw data is shown."
     )
     st.dataframe(qm_rows, use_container_width=True, hide_index=True, height=420)
@@ -682,16 +744,44 @@ with colR:
         unsafe_allow_html=True
     )
 
+# ---------------- Scatter (compare measures) ----------------
+st.markdown('<div class="glass"><div class="app-subtitle">Scatter — compare measures (subsampled)</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
+plot_df = dfv.dropna(subset=["quantum_minima","ic50"]).copy()
+if len(plot_df) >= 10:
+    plot_df = plot_df.sample(min(len(plot_df), MAX_SCATTER), random_state=42)
+    plot_df["winner"] = np.where(
+        plot_df["ic50"].rank(method="dense") < plot_df["quantum_minima"].rank(method="dense"),
+        "IC50-better", "Quantum-better"
+    )
+    fig = px.scatter(
+        plot_df, x="quantum_minima", y="ic50",
+        color="winner",
+        color_discrete_map={"IC50-better":"#e53935","Quantum-better":"#1e88e5"},
+        hover_data=["DRUG_NAME","DepMap_ID","Q_MEAN","n"],
+        title="Lower-left is best; color shows which metric wins per row",
+    )
+    fig.update_traces(marker=dict(size=7, opacity=0.9, line=dict(width=0)))
+    # DARK-friendly plotly settings:
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0,r=0,t=40,b=0),
+        legend_title_text=""
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Not enough rows with both minima and IC50 to plot.")
+st.markdown('</div>', unsafe_allow_html=True)
+
 # ---------------- Topographic UMAP ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Topographic UMAP — high sensitivity</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
-# now always returns something: cached → helpers → fallback
 emb, emb_source = _load_or_build_umap_cached(cohort, df)
 
 if emb is None or emb.empty:
     st.info("UMAP embedding could not be built.")
 else:
-    # show source note
     if emb_source == "fallback":
         st.caption("Embedding source: fallback from cached drug-response features (no gene-expression UMAP available).")
     elif emb_source == "helpers":
@@ -747,7 +837,15 @@ else:
             showlegend=False,
         ))
 
-    # ===== Legend & metrics on the RIGHT =====
+    # DARK-friendly layout for 3D plot
+    fig3d.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=40, b=0),
+        legend_title_text=""
+    )
+
+    # Legend card on the RIGHT
     col_plot, col_info = st.columns([0.70, 0.30], gap="large")
     with col_plot:
         st.plotly_chart(fig3d, use_container_width=True)
@@ -755,7 +853,7 @@ else:
         st.markdown(
             f"""
             <div class="legend-card">
-              <div style="font-weight:700; margin-bottom:6px;">Legend & metrics</div>
+              <div style="font-weight:700; margin-bottom:6px;">Legend &amp; metrics</div>
               <div><span class="legend-dot" style="color:{color_map['IC50-better']}">●</span><b>IC50-better</b>: wet-lab IC50 suggests stronger response.</div>
               <div><span class="legend-dot" style="color:{color_map['Quantum-better']}">●</span><b>Quantum-better</b>: quantum minima suggests stronger response.</div>
               <div><span class="legend-dot" style="color:{color_map['Unknown']}">●</span><b>Unknown</b>: not enough data to decide.</div>

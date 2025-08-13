@@ -1,4 +1,4 @@
-# app_pitch1.py
+# app.py
 # 🔬 Quantum Kernel DevKit v1.3.0 — Cancer Atlas (IC50 vs Quantum Minima)
 
 import os, re, io
@@ -8,8 +8,6 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
-import streamlit as st
-
 
 ROOT = Path(__file__).resolve().parent
 DATA  = ROOT / "data"
@@ -340,7 +338,7 @@ st.markdown("""
   word-break: break-word;
 }
 
-.stApp * { font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"; }
+.stApp * { font_family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"; }
 .app-subtitle { font-family: "Sora"; font-weight: 700; font-size: clamp(18px, 2vw, 26px); color: #0b1220; margin-top: 0.25rem; }
 .loaded-badge { color: #059669; font-weight: 700; }
 
@@ -373,7 +371,6 @@ button[kind="secondary"] { white-space: nowrap; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- Data discovery ----------------
 # ---------------- Data discovery ----------------
 files = _list_cohort_files(CACHE_ROOT)
 if not files:
@@ -427,51 +424,56 @@ with menu:
     _max_n = int(df["n"].max()) if df["n"].notna().any() else 1
     _default_min_n = min(5, max(1, _max_n))
 
-# ---- compute per-cohort maxima safely ----
-import numpy as np
-
-# _max_n should be the max available per-drug *after* all filters
-# Make it a clean positive int
-try:
-    _max_n = int(_max_n)
-except Exception:
-    _max_n = 1
-_max_n = max(1, _max_n)
-
-# Pick a sane default and clamp it into [1, _max_n]
-_default = _default_min_n if _default_min_n is not None else 5
-try:
-    _default = int(_default)
-except Exception:
-    _default = 5
-if np.isnan(_default):  # in case it came from a numpy calc
-    _default = 5
-default_n = int(np.clip(_default, 1, _max_n))
-
-# Optional: if an old session_state value is now out-of-bounds (after a new cohort),
-# reset it to the clamped default to prevent StreamlitAPIException.
-if "min_n" in st.session_state:
+    # ---- clamp & sanitize values
     try:
-        current = int(st.session_state["min_n"])
+        _max_n = int(_max_n)
     except Exception:
-        current = default_n
-    if not (1 <= current <= _max_n):
-        st.session_state["min_n"] = default_n
+        _max_n = 1
+    _max_n = max(1, _max_n)
 
-# Final: strictly-typed slider
-min_n = st.slider(
-    "Min. samples per drug (n)",
-    min_value=1,
-    max_value=_max_n,
-    value=default_n,
-    step=1,
-    key="min_n",
-)
+    _default = _default_min_n if _default_min_n is not None else 5
+    try:
+        _default = int(_default)
+    except Exception:
+        _default = 5
+    if isinstance(_default, float) and np.isnan(_default):
+        _default = 5
+    default_n = int(np.clip(_default, 1, _max_n))
 
-# Optional tiny debug reveal (helpful on Cloud)
-with st.expander("Debug (slider bounds)"):
-    st.write({"_max_n": _max_n, "_default_min_n": _default_min_n, "default_n": default_n, "session_min_n": st.session_state.get("min_n")})
+    # ---- fix stale session state if out of bounds
+    if "min_n" in st.session_state:
+        try:
+            current = int(st.session_state["min_n"])
+        except Exception:
+            current = default_n
+        if not (1 <= current <= _max_n):
+            st.session_state["min_n"] = default_n
 
+    # ---- SAFE slider for min_n (avoid min==max on Streamlit Cloud)
+    if _max_n <= 1:
+        st.session_state["min_n"] = 1
+        st.caption("Only one sample per drug available in this cohort → using n = 1")
+        min_n = 1
+    else:
+        min_n = st.slider(
+            "Min. samples per drug (n)",
+            min_value=1,
+            max_value=int(_max_n),
+            value=int(default_n),
+            step=1,
+            key="min_n",
+        )
+
+    # --------- debug (optional)
+    with st.expander("Debug (slider bounds)"):
+        st.write({
+            "_max_n": _max_n,
+            "_default_min_n": _default_min_n,
+            "default_n": default_n,
+            "session_min_n": st.session_state.get("min_n")
+        })
+
+    # --------- other popover filters
     all_drugs = sorted(set(df["DRUG_NAME"].dropna().astype(str)))
     drug_query = st.text_input("Search drug name", key="drug_query")
     drug_suggest = _drug_suggestions(drug_query, all_drugs, limit=30)
@@ -483,7 +485,8 @@ with st.expander("Debug (slider bounds)"):
     with cA:
         if st.button("Reset filters"):
             st.session_state["q_cohort"] = ""
-            st.session_state["min_n"] = _default_min_n
+            # set to a guaranteed valid value
+            st.session_state["min_n"] = 1 if _max_n <= 1 else default_n
             st.session_state["drug_query"] = ""
             st.session_state["drug_pick"] = "(any)"
             st.session_state["cell_q"] = ""
@@ -660,4 +663,3 @@ st.markdown("""
   This interactive is provided for pitch/demo purposes only. It summarizes public cell-line data and experimental metrics (IC50) alongside simulated quantum minima scores <em>(equation-backed & reproducible)</em>. Values are not medical advice and should not be used for patient treatment decisions. Any interpretations require independent validation in appropriate wet-lab and clinical settings. © 2025 Gfam Quantum.
 </div>
 """, unsafe_allow_html=True)
-

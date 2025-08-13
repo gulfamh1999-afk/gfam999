@@ -87,9 +87,11 @@ def _looks_like_umap_df(df: pd.DataFrame) -> bool:
     return has_xyz and not has_metrics
 
 def _find_non_umap_parquet(folder: str) -> str | None:
-    if not os.path.isdir(folder): return None
+    if not os.path.isdir(folder):
+        return None
     pars = [p for p in os.listdir(folder) if p.lower().endswith(".parquet")]
-    if not pars: return None
+    if not pars:
+        return None
     non_umap = [p for p in pars if "umap" not in p.lower()]
     def score(name: str) -> int:
         n = name.lower(); s = 0
@@ -103,6 +105,7 @@ def _find_non_umap_parquet(folder: str) -> str | None:
 
 @st.cache_data(show_spinner=False)
 def _list_cohort_files(root):
+    """Return (folder_name, parquet_path) preferring non-UMAP parquets."""
     out = []
     if not os.path.isdir(root): return out
     for d in os.listdir(root):
@@ -174,11 +177,12 @@ def _umap_path_for(label):
     cohort_dir, safe = _safe_dir_and_name(label)
     return os.path.join(cohort_dir, f"{safe}_umap.parquet")
 
-# ---------- Fallback embedding ----------
+# ---------- Fallback embedding from cached scores ----------
 def _fallback_embedding_from_scores(df_scores: pd.DataFrame, label: str) -> pd.DataFrame:
     if df_scores is None or df_scores.empty or "DepMap_ID" not in df_scores.columns:
         return pd.DataFrame(columns=["x","y","z","label"])
     g = df_scores.groupby("DepMap_ID", dropna=False)
+
     feats = pd.DataFrame({
         "ic50_min":  g["ic50"].min(),
         "ic50_med":  g["ic50"].median(),
@@ -187,19 +191,24 @@ def _fallback_embedding_from_scores(df_scores: pd.DataFrame, label: str) -> pd.D
         "n_drugs":   g["DRUG_NAME"].nunique(),
         "rows":      g.size()
     }).fillna(0.0)
+
     X = feats.to_numpy(float)
     mu = X.mean(axis=0)
     sigma = X.std(axis=0) + 1e-9
     Xz = (X - mu) / sigma
+
     U, s, Vt = np.linalg.svd(Xz, full_matrices=False)
     Z = U[:, :3] * s[:3]
+
     emb = pd.DataFrame(Z, index=feats.index, columns=["x","y","z"])
     emb["label"] = label
     return emb
 
 @st.cache_data(show_spinner=False)
 def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None):
+    """cached UMAP → helpers UMAP → fallback SVD embedding from scores."""
     umap_path = _umap_path_for(label)
+
     if os.path.exists(umap_path):
         try:
             emb = pd.read_parquet(umap_path)
@@ -207,6 +216,7 @@ def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None
                 return emb, "cached"
         except Exception:
             pass
+
     if HAS_HELPERS:
         try:
             expr, meta, _ = load_ccle_meta_expr_cohort(label)
@@ -228,6 +238,7 @@ def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None
                     return emb, "helpers"
         except Exception:
             pass
+
     if df_scores is not None and not df_scores.empty:
         emb = _fallback_embedding_from_scores(df_scores, label)
         if not emb.empty:
@@ -237,6 +248,7 @@ def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None
             except Exception:
                 pass
             return emb, "fallback"
+
     return pd.DataFrame(columns=["x","y","z","label"]), "none"
 
 # ---------------- Analytics helpers ----------------
@@ -264,14 +276,19 @@ def _drug_suggestions(query, all_drugs, limit=30):
 def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
     if not query: return None
     q = query.strip().lower()
+
     if q in CANONS_LOWER:
-        cand = CANONS_LOWER[q]; return cand if cand in available_labels else None
+        cand = CANONS_LOWER[q]
+        return cand if cand in available_labels else None
     if q in ALIAS_MAP_LOWER:
-        cand = ALIAS_MAP_LOWER[q]; return cand if cand in available_labels else None
+        cand = ALIAS_MAP_LOWER[q]
+        return cand if cand in available_labels else None
+
     starts = [lbl for lbl in available_labels if lbl.lower().startswith(q)]
     contains = [lbl for lbl in available_labels if q in lbl.lower() and lbl not in starts]
     if starts: return starts[0]
     if contains: return contains[0]
+
     pool = set(available_labels) | set(COHORT_ALIASES.keys()) | set(COHORT_ALIASES.values())
     to_canon = {s: canonical_label(s) for s in pool}
     lower_pool = [s.lower() for s in pool]
@@ -285,7 +302,8 @@ def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
                 score = SequenceMatcher(None, q, canon.lower()).ratio()
                 if score > best_score:
                     best, best_score = canon, score
-        if best: return best
+        if best:
+            return best
     return None
 
 def _top_drug_by_metric(df):
@@ -316,6 +334,7 @@ def _umap_winner_and_sensitivity(df):
         ic_pct  = 1.0 - (ic_rank - 1) / (len(ic_rank) - 1)
     else:
         ic_pct = pd.Series(dtype=float)
+
     if len(qm_best) > 1:
         qm_rank = qm_best.rank(method="dense", ascending=True)
         qm_pct  = 1.0 - (qm_rank - 1) / (len(qm_rank) - 1)
@@ -396,8 +415,32 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700;800&display=swap');
 
-/* ---------- LIGHT (default) ---------- */
-html[data-theme="light"] .stApp,
+/* ---------- FORCE BACKGROUND BY STREAMLIT THEME (mobile safe) ---------- */
+html[data-theme="light"] .stApp {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(255,146,209,0.25), transparent 60%),
+    radial-gradient(1000px 800px at 110% 10%, rgba(0,232,255,0.20), transparent 60%),
+    radial-gradient(700px 500px at 30% 100%, rgba(112,104,255,0.22), transparent 60%),
+    linear-gradient(135deg, #e3a1ff 0%, #88d1ff 40%, #7ff0d2 70%, #c6a3ff 100%);
+  background-attachment: fixed;
+  color: #0b1220;
+}
+html[data-theme="light"] .header-bar{
+  background: linear-gradient(135deg, rgba(227,161,255,.60), rgba(136,209,255,.60), rgba(127,240,210,.60), rgba(198,163,255,.60));
+}
+html[data-theme="dark"] .stApp {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
+    radial-gradient(1000px 800px at 110% 10%, rgba(0,179,255,0.16), transparent 60%),
+    radial-gradient(700px 500px at 30% 100%, rgba(98,91,210,0.18), transparent 60%),
+    linear-gradient(135deg, #0d121a 0%, #0f1520 35%, #101a23 70%, #0f1726 100%);
+  color: #eaf0ff;
+}
+html[data-theme="dark"] .header-bar{
+  background: linear-gradient(135deg, rgba(91,67,122,.35), rgba(38,93,128,.35), rgba(36,116,103,.35), rgba(89,66,124,.35));
+}
+
+/* ----- LIGHT (fallback default) ----- */
 .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(255,146,209,0.25), transparent 60%),
@@ -407,7 +450,6 @@ html[data-theme="light"] .stApp,
   background-attachment: fixed;
   color: #0b1220;
 }
-
 .block-container { padding-top: 0.6rem; }
 [data-testid="stSidebar"] { display: none; }
 
@@ -434,6 +476,7 @@ html[data-theme="light"] .stApp,
   font-size: clamp(40px, 6.2vw, 64px);
   line-height: 1.06; letter-spacing: 0.2px;
   color: #0b1220;
+  text-shadow: 0 2px 16px rgba(255,255,255,0.35);
 }
 .stApp * { font-family: "Inter"; }
 .app-subtitle { font-family: "Sora"; font-weight: 700; font-size: clamp(18px, 2vw, 26px); color: #0b1220; margin-top: 0.25rem; }
@@ -453,21 +496,15 @@ button, .stButton>button {
 }
 button:hover, .stButton>button:hover { filter: brightness(1.05); }
 
-/* ---- HIGH-CONTRAST TABLES (LIGHT MODE) ---- */
-html[data-theme="light"] [data-testid="stDataFrame"]{
-  background: rgba(255,255,255,0.78); 
-  border: 1px solid rgba(15,20,35,0.08);
-  border-radius: 16px; 
-  box-shadow: 0 6px 18px rgba(7,10,38,0.10);
-  color:#0b1220;
+[data-testid="stDataFrame"]{
+  background: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 16px; box-shadow: 0 6px 18px rgba(7,10,38,0.12); overflow: hidden; color:#0b1220;
 }
-html[data-theme="light"] [data-testid="stDataFrame"] thead th { 
-  color:#0b1220 !important; font-weight:700 !important; 
-}
-html[data-theme="light"] [data-testid="stDataFrame"] tbody td { 
-  color:#0b1220 !important; font-weight:500 !important; 
-}
+[data-testid="stDataFrame"] thead th { color:#0b1220 !important; }
+[data-testid="stDataFrame"] tbody td { color:#0b1220 !important; }
 [data-testid="stDataFrame"] > div > div{ overflow:auto !important; }
+
+.footer { font-size: 12px; color: #0b1220; }
 
 /* legend card (light) */
 .legend-card {
@@ -480,55 +517,50 @@ html[data-theme="light"] [data-testid="stDataFrame"] tbody td {
 }
 .legend-dot { font-size: 16px; vertical-align: middle; margin-right: 6px; }
 
-/* ---------- DARK OVERRIDES (non-vibrant) ---------- */
-@media (prefers-color-scheme: dark) { .stApp { color: #eaf0ff; } }
-html[data-theme="dark"] .stApp {
-  background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
-    radial-gradient(1000px 800px at 110% 10%, rgba(0,179,255,0.16), transparent 60%),
-    radial-gradient(700px 500px at 30% 100%, rgba(98,91,210,0.18), transparent 60%),
-    linear-gradient(135deg, #0d121a 0%, #0f1520 35%, #101a23 70%, #0f1726 100%);
-  color: #eaf0ff;
-}
-html[data-theme="dark"] .header-bar{
-  background: linear-gradient(135deg, rgba(91,67,122,.35), rgba(38,93,128,.35), rgba(36,116,103,.35), rgba(89,66,124,.35));
-}
-html[data-theme="dark"] .app-title { color: #f2f5ff; text-shadow: none; }
-html[data-theme="dark"] .app-subtitle { color:#e6ecff; }
-
-html[data-theme="dark"] .glass {
-  background: rgba(16,19,28,0.60);
-  border: 1px solid rgba(255,255,255,0.08);
-  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
-  color:#eaf0ff;
-}
-html[data-theme="dark"] input, html[data-theme="dark"] textarea, html[data-theme="dark"] select,
-html[data-theme="dark"] .stTextInput>div>div>input, html[data-theme="dark"] .stSelectbox div[data-baseweb="select"]>div {
-  background: rgba(20,26,38,0.85) !important; color:#eaf0ff !important; border: 1px solid rgba(255,255,255,0.08) !important;
-}
-html[data-theme="dark"] .loaded-badge { color:#34d399; }
-html[data-theme="dark"] [data-testid="stDataFrame"]{
-  background: rgba(13,18,28,0.75);
-  border: 1px solid rgba(255,255,255,0.08);
-  color:#eaf0ff;
-}
-html[data-theme="dark"] [data-testid="stDataFrame"] thead th { color:#f5f8ff !important; }
-html[data-theme="dark"] [data-testid="stDataFrame"] tbody td { color:#eaf0ff !important; }
-html[data-theme="dark"] .legend-card {
-  background: rgba(20,26,38,0.70);
-  border: 1px solid rgba(255,255,255,0.10);
-  color:#eaf0ff;
-}
-html[data-theme="dark"] .stButton>button { color:#0a0f18; }
-
-/* ---------- MOBILE STACKING ---------- */
-.mobile-stack [data-testid="column"] {}
-@media (max-width: 980px) {
-  .mobile-stack [data-testid="stHorizontalBlock"] { gap: 0 !important; }
-  .mobile-stack [data-testid="column"] {
-    width: 100% !important; flex: 1 1 100% !important; padding-right: 0 !important;
+/* ----- DARK OVERRIDES (kept for non-attribute-aware browsers) ----- */
+@media (prefers-color-scheme: dark) {
+  .stApp {
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
+      radial-gradient(1000px 800px at 110% 10%, rgba(0,179,255,0.16), transparent 60%),
+      radial-gradient(700px 500px at 30% 100%, rgba(98,91,210,0.18), transparent 60%),
+      linear-gradient(135deg, #0d121a 0%, #0f1520 35%, #101a23 70%, #0f1726 100%);
+    color: #eaf0ff;
   }
-  .legend-card { margin-top: 10px; }
+  .header-bar{
+    background: linear-gradient(135deg, rgba(91,67,122,.35), rgba(38,93,128,.35), rgba(36,116,103,.35), rgba(89,66,124,.35));
+  }
+  .app-title { color: #f2f5ff; text-shadow: none; }
+  .app-subtitle { color:#e6ecff; }
+
+  .glass {
+    background: rgba(16,19,28,0.60);
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+    color:#eaf0ff;
+  }
+
+  input, textarea, select, .stTextInput>div>div>input, .stSelectbox div[data-baseweb="select"]>div {
+    background: rgba(20,26,38,0.85) !important; color:#eaf0ff !important; border: 1px solid rgba(255,255,255,0.08) !important;
+  }
+
+  .loaded-badge { color:#34d399; }
+
+  [data-testid="stDataFrame"]{
+    background: rgba(13,18,28,0.75);
+    border: 1px solid rgba(255,255,255,0.08);
+    color:#eaf0ff;
+  }
+  [data-testid="stDataFrame"] thead th { color:#f5f8ff !important; }
+  [data-testid="stDataFrame"] tbody td { color:#eaf0ff !important; }
+
+  .legend-card {
+    background: rgba(20,26,38,0.70);
+    border: 1px solid rgba(255,255,255,0.10);
+    color:#eaf0ff;
+  }
+
+  button, .stButton>button { color:#0a0f18; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -568,7 +600,7 @@ with row_b:
     st.markdown('<div style="padding-top:6px"><span class="loaded-badge">✅ Data loaded</span></div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------- Reset handler -------------
+# ------------- Reset handler (safe) -------------
 def _reset_filters(default_n: int):
     st.session_state["q_cohort"] = ""
     st.session_state["min_n"] = default_n
@@ -577,7 +609,7 @@ def _reset_filters(default_n: int):
     st.session_state["cell_q"] = ""
     st.rerun()
 
-# ------------- Auto-jump search -------------
+# ------------- Auto-jump search handler -------------
 def _apply_q_cohort_autojump():
     query = st.session_state.get("q_cohort", "")
     best = _best_cohort_match(query, all_labels)
@@ -652,7 +684,7 @@ with menu:
         st.download_button("Download top lists CSV", data=csv_bytes, file_name="toplists.csv", mime="text/csv")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------------- Apply filters ----------------
+# ---------------- Apply filters (robust) ----------------
 dfv = df.copy()
 n_series = pd.to_numeric(dfv["n"], errors="coerce").fillna(1).astype(int).clip(lower=1)
 min_n_current = int(st.session_state.get("min_n", 1))
@@ -676,6 +708,7 @@ if dfv.empty:
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
+# IC50 shortlist with fallbacks (read from cached raw dataset)
 sub_ic = dfv.dropna(subset=["ic50"]).copy()
 if sub_ic.empty and dfv["ic50_rank"].notna().any():
     sub_ic = dfv.dropna(subset=["ic50_rank"]).copy()
@@ -689,6 +722,7 @@ else:
                       .sort_values("ic50")
                       .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]]
 
+# Quantum shortlist with fallback to Q_MEAN (read from cached raw dataset)
 sub_qm = dfv.dropna(subset=["quantum_minima"]).copy()
 if sub_qm.empty and dfv["Q_MEAN"].notna().any():
     sub_qm = dfv.dropna(subset=["Q_MEAN"]).copy()
@@ -702,7 +736,6 @@ else:
                      .sort_values("quantum_minima")
                      .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","quantum_minima","Q_MEAN","n"]]
 
-st.markdown('<div class="mobile-stack">', unsafe_allow_html=True)
 cL2, cR2 = st.columns(2, gap="large")
 with cL2:
     st.caption(
@@ -717,10 +750,8 @@ with cR2:
     )
     st.dataframe(qm_rows, use_container_width=True, hide_index=True, height=420)
 st.markdown('</div>', unsafe_allow_html=True)
-st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------- Split leaderboards ----------------
-st.markdown('<div class="mobile-stack">', unsafe_allow_html=True)
 colL, colR = st.columns(2, gap="large")
 with colL:
     htmlL = _leaderboard_html(_rank_ic50(dfv), ["IC50_MEDIAN"])
@@ -734,9 +765,8 @@ with colR:
         f'<div class="glass"><div class="app-subtitle">🧠 Quantum minima — top drugs</div><div class="chart-spacer"></div>{htmlR}</div>',
         unsafe_allow_html=True
     )
-st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------------- Scatter ----------------
+# ---------------- Scatter (compare measures) ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Scatter — compare measures (subsampled)</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 plot_df = dfv.dropna(subset=["quantum_minima","ic50"]).copy()
 if len(plot_df) >= 10:
@@ -757,10 +787,8 @@ if len(plot_df) >= 10:
         template="simple_white",
         paper_bgcolor="white",
         plot_bgcolor="white",
-        margin=dict(l=10,r=10,t=70,b=10),
-        legend_title_text="",
-        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1.0),
-        uirevision="scatter"
+        margin=dict(l=0,r=0,t=40,b=0),
+        legend_title_text=""
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
@@ -834,7 +862,7 @@ else:
             showlegend=False,
         ))
 
-    # White scene + firm grid/cage
+    # ---- WHITE background + strong topographic grid/cage ----
     grid = dict(
         showbackground=True, backgroundcolor="white",
         showgrid=True,  gridcolor="#d0d7de", gridwidth=1.2,
@@ -851,30 +879,26 @@ else:
         scene=dict(
             bgcolor="white",
             xaxis=grid, yaxis=grid, zaxis=grid,
-            dragmode="orbit",              # default = orbiting
-            aspectmode="cube"
-        ),
-        uirevision="umap"                 # preserve camera between interactions/reruns
+            dragmode="orbit",
+            aspectmode="cube",
+            camera=dict(eye=dict(x=1.75, y=1.90, z=1.05))
+        )
     )
 
-    st.markdown('<div class="mobile-stack">', unsafe_allow_html=True)
     col_plot, col_info = st.columns([0.70, 0.30], gap="large")
     with col_plot:
         config_3d = {
-            "scrollZoom": True,          # pinch-zoom follows your current orientation
+            "scrollZoom": True,
             "displaylogo": False,
             "responsive": True,
             "doubleClick": "reset",
             "displayModeBar": True,
             "modeBarButtonsToAdd": [
+                "zoom3d", "pan3d", "orbitRotation",
                 "resetCameraDefault3d", "resetCameraLastSave3d", "hoverClosest3d"
-            ],
-            "modeBarButtonsToRemove": [  # remove button that caused snap/back
-                "zoom3d", "pan3d"
             ]
         }
         st.plotly_chart(fig3d, use_container_width=True, config=config_3d)
-        st.caption("📱 Tip: Drag to orbit. Pinch to zoom. Two-finger drag to pan. (No need to tap a tool.)")
     with col_info:
         st.markdown(
             f"""
@@ -890,7 +914,6 @@ else:
             """,
             unsafe_allow_html=True,
         )
-    st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 

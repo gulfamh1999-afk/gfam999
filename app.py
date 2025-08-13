@@ -87,11 +87,9 @@ def _looks_like_umap_df(df: pd.DataFrame) -> bool:
     return has_xyz and not has_metrics
 
 def _find_non_umap_parquet(folder: str) -> str | None:
-    if not os.path.isdir(folder):
-        return None
+    if not os.path.isdir(folder): return None
     pars = [p for p in os.listdir(folder) if p.lower().endswith(".parquet")]
-    if not pars:
-        return None
+    if not pars: return None
     non_umap = [p for p in pars if "umap" not in p.lower()]
     def score(name: str) -> int:
         n = name.lower(); s = 0
@@ -455,15 +453,21 @@ button, .stButton>button {
 }
 button:hover, .stButton>button:hover { filter: brightness(1.05); }
 
-[data-testid="stDataFrame"]{
-  background: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.55);
-  border-radius: 16px; box-shadow: 0 6px 18px rgba(7,10,38,0.12); overflow: hidden; color:#0b1220;
+/* ---- HIGH-CONTRAST TABLES (LIGHT MODE) ---- */
+html[data-theme="light"] [data-testid="stDataFrame"]{
+  background: rgba(255,255,255,0.78); 
+  border: 1px solid rgba(15,20,35,0.08);
+  border-radius: 16px; 
+  box-shadow: 0 6px 18px rgba(7,10,38,0.10);
+  color:#0b1220;
 }
-[data-testid="stDataFrame"] thead th { color:#0b1220 !important; }
-[data-testid="stDataFrame"] tbody td { color:#0b1220 !important; }
+html[data-theme="light"] [data-testid="stDataFrame"] thead th { 
+  color:#0b1220 !important; font-weight:700 !important; 
+}
+html[data-theme="light"] [data-testid="stDataFrame"] tbody td { 
+  color:#0b1220 !important; font-weight:500 !important; 
+}
 [data-testid="stDataFrame"] > div > div{ overflow:auto !important; }
-
-.footer { font-size: 12px; color: #0b1220; }
 
 /* legend card (light) */
 .legend-card {
@@ -476,10 +480,8 @@ button:hover, .stButton>button:hover { filter: brightness(1.05); }
 }
 .legend-dot { font-size: 16px; vertical-align: middle; margin-right: 6px; }
 
-/* ---------- DARK OVERRIDES ---------- */
-@media (prefers-color-scheme: dark) {
-  .stApp { color: #eaf0ff; }
-}
+/* ---------- DARK OVERRIDES (non-vibrant) ---------- */
+@media (prefers-color-scheme: dark) { .stApp { color: #eaf0ff; } }
 html[data-theme="dark"] .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
@@ -520,15 +522,11 @@ html[data-theme="dark"] .legend-card {
 html[data-theme="dark"] .stButton>button { color:#0a0f18; }
 
 /* ---------- MOBILE STACKING ---------- */
-.mobile-stack [data-testid="column"] {
-  /* default desktop keeps normal widths */
-}
+.mobile-stack [data-testid="column"] {}
 @media (max-width: 980px) {
   .mobile-stack [data-testid="stHorizontalBlock"] { gap: 0 !important; }
   .mobile-stack [data-testid="column"] {
-    width: 100% !important;
-    flex: 1 1 100% !important;
-    padding-right: 0 !important;
+    width: 100% !important; flex: 1 1 100% !important; padding-right: 0 !important;
   }
   .legend-card { margin-top: 10px; }
 }
@@ -704,7 +702,6 @@ else:
                      .sort_values("quantum_minima")
                      .head(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","quantum_minima","Q_MEAN","n"]]
 
-# stack on mobile
 st.markdown('<div class="mobile-stack">', unsafe_allow_html=True)
 cL2, cR2 = st.columns(2, gap="large")
 with cL2:
@@ -762,14 +759,13 @@ if len(plot_df) >= 10:
         plot_bgcolor="white",
         margin=dict(l=10,r=10,t=70,b=10),
         legend_title_text="",
-        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1.0)
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1.0),
+        uirevision="scatter"
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
 
-    config_scatter = {
-        "scrollZoom": True, "displaylogo": False, "responsive": True, "doubleClick": "reset"
-    }
+    config_scatter = {"scrollZoom": True, "displaylogo": False, "responsive": True, "doubleClick": "reset"}
     st.plotly_chart(fig, use_container_width=True, config=config_scatter)
 else:
     st.info("Not enough rows with both minima and IC50 to plot.")
@@ -838,7 +834,7 @@ else:
             showlegend=False,
         ))
 
-    # ---- WHITE background + strong topographic grid/cage ----
+    # White scene + firm grid/cage
     grid = dict(
         showbackground=True, backgroundcolor="white",
         showgrid=True,  gridcolor="#d0d7de", gridwidth=1.2,
@@ -855,18 +851,17 @@ else:
         scene=dict(
             bgcolor="white",
             xaxis=grid, yaxis=grid, zaxis=grid,
-            dragmode="orbit",          # default touch = orbit
-            aspectmode="cube",
-            camera=dict(eye=dict(x=1.75, y=1.90, z=1.05))
-        )
+            dragmode="orbit",              # default = orbiting
+            aspectmode="cube"
+        ),
+        uirevision="umap"                 # preserve camera between interactions/reruns
     )
 
-    # Responsive two-column wrapper that stacks on mobile
     st.markdown('<div class="mobile-stack">', unsafe_allow_html=True)
     col_plot, col_info = st.columns([0.70, 0.30], gap="large")
     with col_plot:
         config_3d = {
-            "scrollZoom": True,          # pinch-zoom on mobile
+            "scrollZoom": True,          # pinch-zoom follows your current orientation
             "displaylogo": False,
             "responsive": True,
             "doubleClick": "reset",
@@ -874,11 +869,12 @@ else:
             "modeBarButtonsToAdd": [
                 "resetCameraDefault3d", "resetCameraLastSave3d", "hoverClosest3d"
             ],
-            "modeBarButtonsToRemove": [  # keep UI simple on phones
-                "pan3d"
+            "modeBarButtonsToRemove": [  # remove button that caused snap/back
+                "zoom3d", "pan3d"
             ]
         }
         st.plotly_chart(fig3d, use_container_width=True, config=config_3d)
+        st.caption("📱 Tip: Drag to orbit. Pinch to zoom. Two-finger drag to pan. (No need to tap a tool.)")
     with col_info:
         st.markdown(
             f"""

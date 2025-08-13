@@ -18,7 +18,6 @@ for p, kind in [(CACHE, "dir"), (ASSETS, "dir")]:
     if not p.exists():
         st.warning(f"Optional folder missing: {p.name}")
 
-# If your code expects DATA, either create it or gate it:
 if DATA.exists():
     st.info("Data folder present.")
 else:
@@ -68,18 +67,17 @@ COHORT_ALIASES = {
     "BONE": "Bone Cancer", "OS": "Bone Cancer", "OSTEO": "Bone Cancer",
 }
 
-# ---- Canonicalize cohort names & dedupe ----
 ALIAS_MAP_LOWER = {k.lower(): v for k, v in COHORT_ALIASES.items()}
 CANONS_LOWER    = {v.lower(): v for v in COHORT_ALIASES.values()}
 
 def canonical_label(name: str) -> str:
     n = _pretty_name(name).strip()
     key = n.lower()
-    if key in CANONS_LOWER:        # already a canonical label
+    if key in CANONS_LOWER:
         return CANONS_LOWER[key]
-    if key in ALIAS_MAP_LOWER:     # alias like "lung", "LUAD", "NSCLC", etc.
+    if key in ALIAS_MAP_LOWER:
         return ALIAS_MAP_LOWER[key]
-    return n                       # leave unknowns as-is
+    return n
 
 # ---------------- Utilities ----------------
 def _pretty_name(s): return re.sub(r"_+", " ", s)
@@ -98,11 +96,26 @@ def _list_cohort_files(root):
 @st.cache_data(show_spinner=False)
 def _load_cache(path):
     df = pd.read_parquet(path)
+
+    # Ensure required columns exist
     need = ["DepMap_ID","DRUG_NAME","quantum_minima","ic50","ic50_rank","Q_MEAN","n"]
     for c in need:
-        if c not in df.columns: df[c] = np.nan
+        if c not in df.columns:
+            df[c] = np.nan
+
+    # Coerce numerics
     for c in ["quantum_minima","ic50","ic50_rank","Q_MEAN","n"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # 🔧 Fix n: fill/clamp to ≥1 so filters don't wipe cohorts
+    df["n"] = df["n"].fillna(1).astype(float)
+    df.loc[df["n"] < 1, "n"] = 1
+    df["n"] = df["n"].astype(int)
+
+    # Clean text columns
+    df["DepMap_ID"] = df["DepMap_ID"].astype(str)
+    df["DRUG_NAME"] = df["DRUG_NAME"].astype(str)
+
     return df
 
 def _safe_dir_and_name(label):
@@ -328,8 +341,7 @@ st.markdown("""
 
 .title-wrap { margin: 2px 0 8px 0; }
 .app-title {
-  font-family: "Sora", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
-  font-weight: 800;
+  font-family: "Sora"; font-weight: 800;
   font-size: clamp(40px, 6.2vw, 64px);
   line-height: 1.06;
   letter-spacing: 0.2px;
@@ -338,7 +350,7 @@ st.markdown("""
   word-break: break-word;
 }
 
-.stApp * { font_family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"; }
+.stApp * { font-family: "Inter"; }
 .app-subtitle { font-family: "Sora"; font-weight: 700; font-size: clamp(18px, 2vw, 26px); color: #0b1220; margin-top: 0.25rem; }
 .loaded-badge { color: #059669; font-weight: 700; }
 
@@ -377,13 +389,12 @@ if not files:
     st.error(f"No caches found in {CACHE_ROOT}. Build them first.")
     st.stop()
 
-# Deduplicate by canonical label; prefer a folder that already matches the canonical name
+# Deduplicate by canonical label
 path_by_label = {}
 for raw_name, path in files:
     canon = canonical_label(raw_name)
     if (canon not in path_by_label) or (_pretty_name(raw_name).strip().lower() == canon.lower()):
         path_by_label[canon] = path
-
 all_labels = sorted(path_by_label.keys())
 
 # ---------------- Header + Cohort (STICKY) ----------------
@@ -424,7 +435,7 @@ with menu:
     _max_n = int(df["n"].max()) if df["n"].notna().any() else 1
     _default_min_n = min(5, max(1, _max_n))
 
-    # ---- clamp & sanitize values
+    # ---- sanitize
     try:
         _max_n = int(_max_n)
     except Exception:
@@ -440,7 +451,7 @@ with menu:
         _default = 5
     default_n = int(np.clip(_default, 1, _max_n))
 
-    # ---- fix stale session state if out of bounds
+    # ---- stale session fix
     if "min_n" in st.session_state:
         try:
             current = int(st.session_state["min_n"])
@@ -449,7 +460,7 @@ with menu:
         if not (1 <= current <= _max_n):
             st.session_state["min_n"] = default_n
 
-    # ---- SAFE slider for min_n (avoid min==max on Streamlit Cloud)
+    # ---- SAFE slider (avoid min==max)
     if _max_n <= 1:
         st.session_state["min_n"] = 1
         st.caption("Only one sample per drug available in this cohort → using n = 1")
@@ -464,7 +475,7 @@ with menu:
             key="min_n",
         )
 
-    # --------- debug (optional)
+    # --------- debug (slider bounds)
     with st.expander("Debug (slider bounds)"):
         st.write({
             "_max_n": _max_n,
@@ -485,7 +496,6 @@ with menu:
     with cA:
         if st.button("Reset filters"):
             st.session_state["q_cohort"] = ""
-            # set to a guaranteed valid value
             st.session_state["min_n"] = 1 if _max_n <= 1 else default_n
             st.session_state["drug_query"] = ""
             st.session_state["drug_pick"] = "(any)"
@@ -495,27 +505,45 @@ with menu:
     with cB:
         top_ic50 = _rank_ic50(df).head(DEFAULT_TOPK).rename(columns={"IC50_MEDIAN": "VALUE"})
         top_qm   = _rank_quantum(df).head(DEFAULT_TOPK).rename(columns={"Q_MEAN": "VALUE"})
-        out = pd.concat(
-            [
-                top_ic50.assign(LIST="IC50"),
-                top_qm.assign(LIST="Quantum"),
-            ],
-            ignore_index=True
-        )
+        out = pd.concat([top_ic50.assign(LIST="IC50"), top_qm.assign(LIST="Quantum")], ignore_index=True)
         csv_bytes = out.to_csv(index=False).encode("utf-8")
         st.download_button("Download top lists CSV", data=csv_bytes, file_name="toplists.csv", mime="text/csv")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------------- Apply filters ----------------
+# ---------------- Apply filters (robust) ----------------
 dfv = df.copy()
-dfv = dfv[dfv["n"] >= st.session_state.get("min_n", _default_min_n)]
+
+n_series = pd.to_numeric(dfv["n"], errors="coerce").fillna(1).astype(int).clip(lower=1)
+min_n_current = int(st.session_state.get("min_n", _default_min_n))
+
+mask = n_series >= min_n_current
+
 if st.session_state.get("drug_pick", "(any)") != "(any)":
-    dfv = dfv[dfv["DRUG_NAME"].astype(str) == st.session_state["drug_pick"]]
+    mask &= (dfv["DRUG_NAME"].astype(str) == st.session_state["drug_pick"])
 elif st.session_state.get("drug_query", ""):
-    dfv = dfv[dfv["DRUG_NAME"].astype(str).str.lower().str.contains(st.session_state["drug_query"].strip().lower())]
+    q = st.session_state["drug_query"].strip().lower()
+    mask &= dfv["DRUG_NAME"].astype(str).str.lower().str.contains(q)
+
 if st.session_state.get("cell_q", ""):
-    dfv = dfv[dfv["DepMap_ID"].astype(str).str.upper().str.contains(st.session_state["cell_q"].strip().upper())]
+    qcell = st.session_state["cell_q"].strip().upper()
+    mask &= dfv["DepMap_ID"].astype(str).str.upper().str.contains(qcell)
+
+dfv = dfv[mask].copy()
+
+if dfv.empty:
+    st.warning("No rows match the current filters for this cohort. "
+               "Filters have been relaxed to show all rows. Try lowering ‘Min. samples per drug (n)’ to 1.")
+    dfv = df.copy()
+
+# Optional UX: quick counts
+with st.expander("Debug (rows)"):
+    st.write({
+        "rows_all": int(len(df)),
+        "rows_after_filters": int(len(dfv)),
+        "unique_drugs": int(dfv["DRUG_NAME"].nunique()),
+        "min_n_selected": int(min_n_current)
+    })
 
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)

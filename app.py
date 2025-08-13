@@ -8,6 +8,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
+from difflib import get_close_matches
 
 ROOT = Path(__file__).resolve().parent
 DATA  = ROOT / "data"
@@ -83,27 +84,20 @@ def _pretty_name(s): return re.sub(r"_+", " ", s)
 def _looks_like_umap_df(df: pd.DataFrame) -> bool:
     cols = set(c.lower() for c in df.columns)
     has_xyz = {"x","y","z"}.issubset(cols)
-    has_metrics = any(c in cols for c in ["ic50","quantum_minima","q_mean","q_mean".upper(),"ic50_rank"])
-    # treat as UMAP if it has xyz but no metrics
+    has_metrics = any(c in cols for c in ["ic50","quantum_minima","q_mean","ic50_rank"])
     return has_xyz and not has_metrics
 
 def _find_non_umap_parquet(folder: str) -> str | None:
-    """Prefer a parquet in folder that is NOT an umap file by name."""
     if not os.path.isdir(folder):
         return None
     pars = [p for p in os.listdir(folder) if p.lower().endswith(".parquet")]
     if not pars:
         return None
-    # hard preference order: filenames without 'umap'
     non_umap = [p for p in pars if "umap" not in p.lower()]
-    # mild preference for 'table','joined','cache','data'
     def score(name: str) -> int:
-        n = name.lower()
-        s = 0
+        n = name.lower(); s = 0
         if "umap" in n: s -= 10
-        for kw in ("table","joined","cache","data","scores","drug"):
-            if kw in n: s += 2
-        # prefer larger-looking names (heuristic)
+        for kw in ("table","joined","cache","data","scores","drug"): s += 2 if kw in n else 0
         s += len(n) // 10
         return s
     candidates = non_umap if non_umap else pars
@@ -112,7 +106,6 @@ def _find_non_umap_parquet(folder: str) -> str | None:
 
 @st.cache_data(show_spinner=False)
 def _list_cohort_files(root):
-    """Return (folder_name, parquet_path) preferring non-UMAP parquets."""
     out = []
     if not os.path.isdir(root): return out
     for d in os.listdir(root):
@@ -121,7 +114,6 @@ def _list_cohort_files(root):
             continue
         chosen = _find_non_umap_parquet(sub)
         if chosen is None:
-            # fallback to any parquet (may be UMAP; loader will re-route)
             pars = [p for p in os.listdir(sub) if p.lower().endswith(".parquet")]
             if pars:
                 chosen = os.path.join(sub, pars[0])
@@ -130,7 +122,6 @@ def _list_cohort_files(root):
     return sorted(out, key=lambda x: x[0].lower())
 
 def _alias_into(df, target: str, candidates: list[str]):
-    """Populate df[target] from the first existing alias in candidates."""
     if target in df.columns and df[target].notna().any():
         return
     lower_cols = {c.lower(): c for c in df.columns}
@@ -144,42 +135,33 @@ def _alias_into(df, target: str, candidates: list[str]):
 
 @st.cache_data(show_spinner=False)
 def _load_cache(path):
-    # read raw
     raw = pd.read_parquet(path)
-
-    # If we accidentally got the UMAP parquet, auto-switch to sibling non-UMAP parquet
     if _looks_like_umap_df(raw):
         sibling = _find_non_umap_parquet(os.path.dirname(path))
         if sibling and os.path.abspath(sibling) != os.path.abspath(path):
             try:
-                raw2 = pd.read_parquet(sibling)
-                raw = raw2
+                raw = pd.read_parquet(sibling)
             except Exception:
                 pass
 
     df = raw.copy()
 
-    # Ensure required columns exist
     need = ["DepMap_ID","DRUG_NAME","quantum_minima","ic50","ic50_rank","Q_MEAN","n"]
     for c in need:
         if c not in df.columns:
             df[c] = np.nan
 
-    # Map common aliases → canonical columns
     _alias_into(df, "ic50", ["ic50","IC50","ic50_value","IC50_VALUE","ln_ic50","LN_IC50"])
     _alias_into(df, "quantum_minima", ["quantum_minima","quantum_min","q_min","qmin","quant_min"])
     _alias_into(df, "Q_MEAN", ["Q_MEAN","q_mean","qmean"])
 
-    # Coerce numerics
     for c in ["quantum_minima","ic50","ic50_rank","Q_MEAN","n"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Fix n: fill/clamp to ≥1
     df["n"] = df["n"].fillna(1).astype(float)
     df.loc[df["n"] < 1, "n"] = 1
     df["n"] = df["n"].astype(int)
 
-    # Clean text columns
     if "DepMap_ID" in df.columns:
         df["DepMap_ID"] = df["DepMap_ID"].astype(str)
     if "DRUG_NAME" in df.columns:
@@ -254,20 +236,33 @@ def _drug_suggestions(query, all_drugs, limit=30):
     contains = [d for d in all_drugs if q in str(d).lower() and d not in starts]
     return (starts + contains)[:limit]
 
-def _suggest_cohorts(query, available_labels):
-    if not query: return available_labels
+def _suggest_cohorts_typo_tolerant(query: str, available_labels: list[str]) -> list[str]:
+    """Return best canonical matches even for misspellings."""
+    if not query:
+        return available_labels
     q = query.strip().lower()
-    hits = []
-    for alias, canon in COHORT_ALIASES.items():
-        if alias.lower().startswith(q) or q in alias.lower():
-            if canon in available_labels: hits.append(canon)
-    for name in available_labels:
-        if name.lower().startswith(q) or q in name.lower(): hits.append(name)
-    seen, out = set(), []
-    for h in hits:
-        if h not in seen:
-            out.append(h); seen.add(h)
-    return out if out else available_labels
+
+    # pool = canonical labels + aliases
+    pool = set(available_labels)
+    pool.update(COHORT_ALIASES.keys())
+    pool.update(COHORT_ALIASES.values())
+
+    # simple contains + startswith
+    hits = [lbl for lbl in pool if q in lbl.lower() or lbl.lower().startswith(q)]
+
+    # add fuzzy (difflib)
+    fuzzy = get_close_matches(q, [s.lower() for s in pool], n=5, cutoff=0.55)
+    hits += [s for s in pool if s.lower() in fuzzy]
+
+    # canonicalize & dedupe, keep order
+    out, seen = [], set()
+    for h in hits or pool:
+        canon = canonical_label(h)
+        if canon in available_labels and canon not in seen:
+            out.append(canon); seen.add(canon)
+
+    # ensure something
+    return out or available_labels
 
 def _top_drug_by_metric(df):
     best_ic50 = (df.dropna(subset=["ic50"])
@@ -451,12 +446,32 @@ with row_b:
     st.markdown('<div style="padding-top:6px"><span class="loaded-badge">✅ Data loaded</span></div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)  # end sticky header-bar
 
+# ------------- Reset handler (safe) -------------
+def _reset_filters(default_n: int):
+    # Only touch keys that exist or are ours
+    st.session_state["q_cohort"] = ""
+    st.session_state["min_n"] = default_n
+    st.session_state["drug_query"] = ""
+    st.session_state["drug_pick"] = "(any)"
+    st.session_state["cell_q"] = ""
+    st.rerun()
+
 # ---------------- Filters inside the popover ----------------
 with menu:
     st.markdown('<div class="menu-wrap">', unsafe_allow_html=True)
     st.markdown("### Filters")
-    q_cohort = st.text_input("Search cancer type (e.g., SK, LUAD)", value="", key="q_cohort")
-    _ = _suggest_cohorts(q_cohort, all_labels)
+
+    # Typo-tolerant search → suggestions + jump
+    q_cohort = st.text_input("Search cancer type (e.g., LUAD, leukemai)", value=st.session_state.get("q_cohort",""), key="q_cohort")
+    sug_labels = _suggest_cohorts_typo_tolerant(q_cohort, all_labels)
+    pick_sug = st.selectbox("Matches", sug_labels, index=0, key="sug_pick")
+    col_go1, col_go2 = st.columns([0.5, 0.5])
+    with col_go1:
+        if st.button("Jump to cohort"):
+            st.session_state["cohortpick"] = pick_sug   # switch the main selectbox
+            st.rerun()
+    with col_go2:
+        st.caption("Typos auto-correct (e.g., ‘leukemai’ → Leukemia).")
     st.divider()
 
     _max_n = int(df["n"].max()) if df["n"].notna().any() else 1
@@ -494,7 +509,7 @@ with menu:
             "Min. samples per drug (n)",
             min_value=1,
             max_value=int(_max_n),
-            value=int(default_n),
+            value=int(default_n if st.session_state.get("min_n") is None else st.session_state["min_n"]),
             step=1,
             key="min_n",
         )
@@ -516,13 +531,7 @@ with menu:
 
     cA, cB = st.columns(2)
     with cA:
-        if st.button("Reset filters"):
-            st.session_state["q_cohort"] = ""
-            st.session_state["min_n"] = 1 if _max_n <= 1 else default_n
-            st.session_state["drug_query"] = ""
-            st.session_state["drug_pick"] = "(any)"
-            st.session_state["cell_q"] = ""
-            st.experimental_rerun()
+        st.button("Reset filters", on_click=_reset_filters, args=(default_n,))
     with cB:
         top_ic50 = _rank_ic50(df).head(DEFAULT_TOPK).rename(columns={"IC50_MEDIAN": "VALUE"})
         top_qm   = _rank_quantum(df).head(DEFAULT_TOPK).rename(columns={"Q_MEAN": "VALUE"})
@@ -568,7 +577,6 @@ with st.expander("Cohort diagnostics"):
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
-# IC50 shortlist with fallbacks
 sub_ic = dfv.dropna(subset=["ic50"]).copy()
 if sub_ic.empty and dfv["ic50_rank"].notna().any():
     sub_ic = dfv.dropna(subset=["ic50_rank"]).copy()
@@ -582,7 +590,6 @@ else:
                       .sort_values("ic50")
                       .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]])
 
-# Quantum shortlist with fallback to Q_MEAN
 sub_qm = dfv.dropna(subset=["quantum_minima"]).copy()
 if sub_qm.empty and dfv["Q_MEAN"].notna().any():
     sub_qm = dfv.dropna(subset=["Q_MEAN"]).copy()
@@ -645,9 +652,6 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------- Topographic UMAP ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Topographic UMAP — high sensitivity</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
-
-def _umap_path_for_label(label: str) -> str:
-    return _umap_path_for(label)
 
 emb = _load_or_build_umap_cached(cohort)
 if emb is None or emb.empty:

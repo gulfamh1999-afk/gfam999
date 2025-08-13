@@ -7,6 +7,24 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+from pathlib import Path
+import streamlit as st
+
+
+ROOT = Path(__file__).resolve().parent
+DATA  = ROOT / "data"
+CACHE = ROOT / "cache"
+ASSETS = ROOT / "assets"
+
+for p, kind in [(CACHE, "dir"), (ASSETS, "dir")]:
+    if not p.exists():
+        st.warning(f"Optional folder missing: {p.name}")
+
+# If your code expects DATA, either create it or gate it:
+if DATA.exists():
+    st.info("Data folder present.")
+else:
+    st.info("Data folder not present; running demo with cached artifacts only.")
 
 # ---------------- Config ----------------
 CACHE_ROOT = os.path.join("cache", "v1.3.0")

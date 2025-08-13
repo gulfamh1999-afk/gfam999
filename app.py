@@ -110,7 +110,7 @@ def _list_cohort_files(root):
     if not os.path.isdir(root): return out
     for d in os.listdir(root):
         sub = os.path.join(root, d)
-        if not os.path.isdir(sub): 
+        if not os.path.isdir(sub):
             continue
         chosen = _find_non_umap_parquet(sub)
         if chosen is None:
@@ -415,8 +415,8 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700;800&display=swap');
 
-/* ---------- FORCE BACKGROUND BY STREAMLIT THEME (mobile safe) ---------- */
-html[data-theme="light"] .stApp {
+/* ===== Force background by Streamlit theme (mobile-safe) ===== */
+html[data-theme="light"] .stApp, body[data-theme="light"] .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(255,146,209,0.25), transparent 60%),
     radial-gradient(1000px 800px at 110% 10%, rgba(0,232,255,0.20), transparent 60%),
@@ -425,10 +425,11 @@ html[data-theme="light"] .stApp {
   background-attachment: fixed;
   color: #0b1220;
 }
-html[data-theme="light"] .header-bar{
+html[data-theme="light"] .header-bar, body[data-theme="light"] .header-bar{
   background: linear-gradient(135deg, rgba(227,161,255,.60), rgba(136,209,255,.60), rgba(127,240,210,.60), rgba(198,163,255,.60));
 }
-html[data-theme="dark"] .stApp {
+
+html[data-theme="dark"] .stApp, body[data-theme="dark"] .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
     radial-gradient(1000px 800px at 110% 10%, rgba(0,179,255,0.16), transparent 60%),
@@ -436,11 +437,11 @@ html[data-theme="dark"] .stApp {
     linear-gradient(135deg, #0d121a 0%, #0f1520 35%, #101a23 70%, #0f1726 100%);
   color: #eaf0ff;
 }
-html[data-theme="dark"] .header-bar{
+html[data-theme="dark"] .header-bar, body[data-theme="dark"] .header-bar{
   background: linear-gradient(135deg, rgba(91,67,122,.35), rgba(38,93,128,.35), rgba(36,116,103,.35), rgba(89,66,124,.35));
 }
 
-/* ----- LIGHT (fallback default) ----- */
+/* ----- Fallback LIGHT (used if no data-theme attr is present) ----- */
 .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(255,146,209,0.25), transparent 60%),
@@ -517,51 +518,38 @@ button:hover, .stButton>button:hover { filter: brightness(1.05); }
 }
 .legend-dot { font-size: 16px; vertical-align: middle; margin-right: 6px; }
 
-/* ----- DARK OVERRIDES (kept for non-attribute-aware browsers) ----- */
-@media (prefers-color-scheme: dark) {
-  .stApp {
-    background:
-      radial-gradient(1200px 600px at 10% -10%, rgba(164,113,226,0.18), transparent 60%),
-      radial-gradient(1000px 800px at 110% 10%, rgba(0,179,255,0.16), transparent 60%),
-      radial-gradient(700px 500px at 30% 100%, rgba(98,91,210,0.18), transparent 60%),
-      linear-gradient(135deg, #0d121a 0%, #0f1520 35%, #101a23 70%, #0f1726 100%);
-    color: #eaf0ff;
-  }
-  .header-bar{
-    background: linear-gradient(135deg, rgba(91,67,122,.35), rgba(38,93,128,.35), rgba(36,116,103,.35), rgba(89,66,124,.35));
-  }
-  .app-title { color: #f2f5ff; text-shadow: none; }
-  .app-subtitle { color:#e6ecff; }
-
-  .glass {
-    background: rgba(16,19,28,0.60);
-    border: 1px solid rgba(255,255,255,0.08);
-    box-shadow: 0 8px 28px rgba(0,0,0,0.45);
-    color:#eaf0ff;
-  }
-
-  input, textarea, select, .stTextInput>div>div>input, .stSelectbox div[data-baseweb="select"]>div {
-    background: rgba(20,26,38,0.85) !important; color:#eaf0ff !important; border: 1px solid rgba(255,255,255,0.08) !important;
-  }
-
-  .loaded-badge { color:#34d399; }
-
-  [data-testid="stDataFrame"]{
-    background: rgba(13,18,28,0.75);
-    border: 1px solid rgba(255,255,255,0.08);
-    color:#eaf0ff;
-  }
-  [data-testid="stDataFrame"] thead th { color:#f5f8ff !important; }
-  [data-testid="stDataFrame"] tbody td { color:#eaf0ff !important; }
-
-  .legend-card {
-    background: rgba(20,26,38,0.70);
-    border: 1px solid rgba(255,255,255,0.10);
-    color:#eaf0ff;
-  }
-
-  button, .stButton>button { color:#0a0f18; }
+/* ===== Dark theme component tweaks (only when theme=dark) ===== */
+html[data-theme="dark"] .app-title, body[data-theme="dark"] .app-title { color: #f2f5ff; text-shadow: none; }
+html[data-theme="dark"] .app-subtitle, body[data-theme="dark"] .app-subtitle { color:#e6ecff; }
+html[data-theme="dark"] .glass, body[data-theme="dark"] .glass {
+  background: rgba(16,19,28,0.60);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  color:#eaf0ff;
 }
+html[data-theme="dark"] input, body[data-theme="dark"] input,
+html[data-theme="dark"] textarea, body[data-theme="dark"] textarea,
+html[data-theme="dark"] select, body[data-theme="dark"] select,
+html[data-theme="dark"] .stTextInput>div>div>input, body[data-theme="dark"] .stTextInput>div>div>input,
+html[data-theme="dark"] .stSelectbox div[data-baseweb="select"]>div, body[data-theme="dark"] .stSelectbox div[data-baseweb="select"]>div {
+  background: rgba(20,26,38,0.85) !important; color:#eaf0ff !important; border: 1px solid rgba(255,255,255,0.08) !important;
+}
+html[data-theme="dark"] [data-testid="stDataFrame"], body[data-theme="dark"] [data-testid="stDataFrame"]{
+  background: rgba(13,18,28,0.75);
+  border: 1px solid rgba(255,255,255,0.08);
+  color:#eaf0ff;
+}
+html[data-theme="dark"] [data-testid="stDataFrame"] thead th,
+body[data-theme="dark"]  [data-testid="stDataFrame"] thead th { color:#f5f8ff !important; }
+html[data-theme="dark"] [data-testid="stDataFrame"] tbody td,
+body[data-theme="dark"]  [data-testid="stDataFrame"] tbody td { color:#eaf0ff !important; }
+html[data-theme="dark"] .legend-card, body[data-theme="dark"] .legend-card {
+  background: rgba(20,26,38,0.70);
+  border: 1px solid rgba(255,255,255,0.10);
+  color:#eaf0ff;
+}
+html[data-theme="dark"] button, body[data-theme="dark"] button,
+html[data-theme="dark"] .stButton>button, body[data-theme="dark"] .stButton>button { color:#0a0f18; }
 </style>
 """, unsafe_allow_html=True)
 

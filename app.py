@@ -1,37 +1,35 @@
-# app_pitch1.py
+# app.py
 # 🔬 Quantum Kernel DevKit v1.3.0 — Cancer Atlas (IC50 vs Quantum Minima)
 
-import os, re, io
+import os, re
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
-import streamlit as st
-
+from difflib import SequenceMatcher, get_close_matches
 
 ROOT = Path(__file__).resolve().parent
 DATA  = ROOT / "data"
 CACHE = ROOT / "cache"
 ASSETS = ROOT / "assets"
 
-for p, kind in [(CACHE, "dir"), (ASSETS, "dir")]:
+for p in (CACHE, ASSETS):
     if not p.exists():
         st.warning(f"Optional folder missing: {p.name}")
 
-# If your code expects DATA, either create it or gate it:
 if DATA.exists():
     st.info("Data folder present.")
 else:
     st.info("Data folder not present; running demo with cached artifacts only.")
 
 # ---------------- Config ----------------
-CACHE_ROOT = os.path.join("cache", "v1.3.0")
+CACHE_ROOT   = os.path.join("cache", "v1.3.0")
 DEFAULT_TOPK = 25
-MAX_SCATTER = 3000
-UMAP_SAMPLE = 800
-KNN_K = 8
+MAX_SCATTER  = 3000
+UMAP_SAMPLE  = 800
+KNN_K        = 8
 
 st.set_page_config(
     page_title="Quantum Kernel DevKit — Cancer Atlas",
@@ -51,7 +49,7 @@ def header_ratios_for(title: str):
     else:        M = 10
     return [L, M, R]
 
-# Optional helpers
+# Optional helpers (for true gene-expression UMAP)
 try:
     from helpers_demo import load_ccle_meta_expr_cohort, make_umap
     HAS_HELPERS = True
@@ -69,42 +67,106 @@ COHORT_ALIASES = {
     "PAAD": "Pancreatic Cancer", "PANC": "Pancreatic Cancer",
     "BONE": "Bone Cancer", "OS": "Bone Cancer", "OSTEO": "Bone Cancer",
 }
-
-# ---- Canonicalize cohort names & dedupe ----
 ALIAS_MAP_LOWER = {k.lower(): v for k, v in COHORT_ALIASES.items()}
 CANONS_LOWER    = {v.lower(): v for v in COHORT_ALIASES.values()}
+
+def _pretty_name(s): return re.sub(r"_+", " ", s)
 
 def canonical_label(name: str) -> str:
     n = _pretty_name(name).strip()
     key = n.lower()
-    if key in CANONS_LOWER:        # already a canonical label
-        return CANONS_LOWER[key]
-    if key in ALIAS_MAP_LOWER:     # alias like "lung", "LUAD", "NSCLC", etc.
-        return ALIAS_MAP_LOWER[key]
-    return n                       # leave unknowns as-is
+    if key in CANONS_LOWER:    return CANONS_LOWER[key]
+    if key in ALIAS_MAP_LOWER: return ALIAS_MAP_LOWER[key]
+    return n
 
-# ---------------- Utilities ----------------
-def _pretty_name(s): return re.sub(r"_+", " ", s)
+# ---------------- Parquet discovery & loading ----------------
+def _looks_like_umap_df(df: pd.DataFrame) -> bool:
+    cols = set(c.lower() for c in df.columns)
+    has_xyz = {"x","y","z"}.issubset(cols)
+    has_metrics = any(c in cols for c in ["ic50","quantum_minima","q_mean","ic50_rank"])
+    return has_xyz and not has_metrics
+
+def _find_non_umap_parquet(folder: str) -> str | None:
+    if not os.path.isdir(folder):
+        return None
+    pars = [p for p in os.listdir(folder) if p.lower().endswith(".parquet")]
+    if not pars:
+        return None
+    non_umap = [p for p in pars if "umap" not in p.lower()]
+    def score(name: str) -> int:
+        n = name.lower(); s = 0
+        if "umap" in n: s -= 10
+        for kw in ("table","joined","cache","data","scores","drug"): s += 2 if kw in n else 0
+        s += len(n) // 10
+        return s
+    candidates = non_umap if non_umap else pars
+    candidates = sorted(candidates, key=score, reverse=True)
+    return os.path.join(folder, candidates[0]) if candidates else None
 
 @st.cache_data(show_spinner=False)
 def _list_cohort_files(root):
+    """Return (folder_name, parquet_path) preferring non-UMAP parquets."""
     out = []
     if not os.path.isdir(root): return out
     for d in os.listdir(root):
         sub = os.path.join(root, d)
-        if os.path.isdir(sub):
+        if not os.path.isdir(sub): 
+            continue
+        chosen = _find_non_umap_parquet(sub)
+        if chosen is None:
             pars = [p for p in os.listdir(sub) if p.lower().endswith(".parquet")]
-            if pars: out.append((d, os.path.join(sub, pars[0])))
+            if pars:
+                chosen = os.path.join(sub, pars[0])
+        if chosen:
+            out.append((d, chosen))
     return sorted(out, key=lambda x: x[0].lower())
+
+def _alias_into(df, target: str, candidates: list[str]):
+    if target in df.columns and df[target].notna().any():
+        return
+    lower_cols = {c.lower(): c for c in df.columns}
+    for cand in candidates:
+        if cand.lower() in lower_cols:
+            src = lower_cols[cand.lower()]
+            df[target] = pd.to_numeric(df[src], errors="coerce")
+            return
+    if target not in df.columns:
+        df[target] = np.nan
 
 @st.cache_data(show_spinner=False)
 def _load_cache(path):
-    df = pd.read_parquet(path)
+    raw = pd.read_parquet(path)
+    if _looks_like_umap_df(raw):
+        sibling = _find_non_umap_parquet(os.path.dirname(path))
+        if sibling and os.path.abspath(sibling) != os.path.abspath(path):
+            try:
+                raw = pd.read_parquet(sibling)
+            except Exception:
+                pass
+
+    df = raw.copy()
+
     need = ["DepMap_ID","DRUG_NAME","quantum_minima","ic50","ic50_rank","Q_MEAN","n"]
     for c in need:
-        if c not in df.columns: df[c] = np.nan
+        if c not in df.columns:
+            df[c] = np.nan
+
+    _alias_into(df, "ic50", ["ic50","IC50","ic50_value","IC50_VALUE","ln_ic50","LN_IC50"])
+    _alias_into(df, "quantum_minima", ["quantum_minima","quantum_min","q_min","qmin","quant_min"])
+    _alias_into(df, "Q_MEAN", ["Q_MEAN","q_mean","qmean"])
+
     for c in ["quantum_minima","ic50","ic50_rank","Q_MEAN","n"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["n"] = df["n"].fillna(1).astype(float)
+    df.loc[df["n"] < 1, "n"] = 1
+    df["n"] = df["n"].astype(int)
+
+    if "DepMap_ID" in df.columns:
+        df["DepMap_ID"] = df["DepMap_ID"].astype(str)
+    if "DRUG_NAME" in df.columns:
+        df["DRUG_NAME"] = df["DRUG_NAME"].astype(str)
+
     return df
 
 def _safe_dir_and_name(label):
@@ -116,43 +178,88 @@ def _umap_path_for(label):
     cohort_dir, safe = _safe_dir_and_name(label)
     return os.path.join(cohort_dir, f"{safe}_umap.parquet")
 
+# ---------- NEW: fallback embedding from cached scores ----------
+def _fallback_embedding_from_scores(df_scores: pd.DataFrame, label: str) -> pd.DataFrame:
+    """Build a lightweight 3D embedding from cached drug-response features (no helpers required)."""
+    if df_scores is None or df_scores.empty or "DepMap_ID" not in df_scores.columns:
+        return pd.DataFrame(columns=["x","y","z","label"])
+    g = df_scores.groupby("DepMap_ID", dropna=False)
+
+    feats = pd.DataFrame({
+        "ic50_min":  g["ic50"].min(),
+        "ic50_med":  g["ic50"].median(),
+        "qmin_min":  g["quantum_minima"].min(),
+        "qmean":     g["Q_MEAN"].mean(),
+        "n_drugs":   g["DRUG_NAME"].nunique(),
+        "rows":      g.size()
+    }).fillna(0.0)
+
+    # Standardize
+    X = feats.to_numpy(float)
+    mu = X.mean(axis=0)
+    sigma = X.std(axis=0) + 1e-9
+    Xz = (X - mu) / sigma
+
+    # 3D SVD projection
+    U, s, Vt = np.linalg.svd(Xz, full_matrices=False)
+    Z = U[:, :3] * s[:3]
+
+    emb = pd.DataFrame(Z, index=feats.index, columns=["x","y","z"])
+    emb["label"] = label
+    return emb
+
 @st.cache_data(show_spinner=False)
-def _load_or_build_umap_cached(label):
+def _load_or_build_umap_cached(label: str, df_scores: pd.DataFrame | None = None):
+    """Try, in order: cached UMAP parquet → helpers UMAP → fallback SVD embedding from scores."""
     umap_path = _umap_path_for(label)
+
+    # 1) cached parquet
     if os.path.exists(umap_path):
         try:
             emb = pd.read_parquet(umap_path)
             if {"x","y","z","label"}.issubset(set(emb.columns)) and len(emb) > 0:
-                return emb
+                return emb, "cached"
         except Exception:
             pass
-    if not HAS_HELPERS:
-        return pd.DataFrame(columns=["x","y","z","label"])
 
-    expr, meta, _ = load_ccle_meta_expr_cohort(label)
-    if expr.empty or meta.empty:
-        return pd.DataFrame(columns=["x","y","z","label"])
+    # 2) gene-expression UMAP via helpers (if available)
+    if HAS_HELPERS:
+        try:
+            expr, meta, _ = load_ccle_meta_expr_cohort(label)
+            if not expr.empty and not meta.empty:
+                if expr.shape[0] > UMAP_SAMPLE:
+                    keep = np.random.RandomState(42).choice(expr.index, UMAP_SAMPLE, replace=False)
+                    expr = expr.loc[keep]
+                    meta = meta[meta["DepMap_ID"].isin(expr.index)]
+                emb_np = make_umap(expr)
+                if emb_np is not None and len(emb_np) > 0:
+                    lab_col = "primary_disease" if "primary_disease" in meta.columns else "lineage"
+                    emb = pd.DataFrame(emb_np, columns=["x","y","z"], index=expr.index)
+                    emb["label"] = meta.set_index("DepMap_ID").loc[emb.index, lab_col].astype(str).values
+                    try:
+                        os.makedirs(os.path.dirname(umap_path), exist_ok=True)
+                        emb.to_parquet(umap_path, index=True)
+                    except Exception:
+                        pass
+                    return emb, "helpers"
+        except Exception:
+            pass
 
-    if expr.shape[0] > UMAP_SAMPLE:
-        keep = np.random.RandomState(42).choice(expr.index, UMAP_SAMPLE, replace=False)
-        expr = expr.loc[keep]
-        meta = meta[meta["DepMap_ID"].isin(expr.index)]
+    # 3) fallback from cached drug-response scores
+    if df_scores is not None and not df_scores.empty:
+        emb = _fallback_embedding_from_scores(df_scores, label)
+        if not emb.empty:
+            try:
+                os.makedirs(os.path.dirname(umap_path), exist_ok=True)
+                emb.to_parquet(umap_path, index=True)
+            except Exception:
+                pass
+            return emb, "fallback"
 
-    emb_np = make_umap(expr)
-    if emb_np is None or len(emb_np) == 0:
-        return pd.DataFrame(columns=["x","y","z","label"])
+    # give up
+    return pd.DataFrame(columns=["x","y","z","label"]), "none"
 
-    lab_col = "primary_disease" if "primary_disease" in meta.columns else "lineage"
-    emb = pd.DataFrame(emb_np, columns=["x","y","z"], index=expr.index)
-    emb["label"] = meta.set_index("DepMap_ID").loc[emb.index, lab_col].astype(str).values
-
-    try:
-        os.makedirs(os.path.dirname(umap_path), exist_ok=True)
-        emb.to_parquet(umap_path, index=True)
-    except Exception:
-        pass
-    return emb
-
+# ---------------- Analytics helpers ----------------
 def _rank_ic50(df):
     sub = df[df["ic50"].notna()].copy()
     if sub.empty: return pd.DataFrame(columns=["DRUG_NAME","IC50_MEDIAN","n"])
@@ -174,20 +281,40 @@ def _drug_suggestions(query, all_drugs, limit=30):
     contains = [d for d in all_drugs if q in str(d).lower() and d not in starts]
     return (starts + contains)[:limit]
 
-def _suggest_cohorts(query, available_labels):
-    if not query: return available_labels
+def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
+    """Typo-tolerant best match → canonical label in available_labels."""
+    if not query: return None
     q = query.strip().lower()
-    hits = []
-    for alias, canon in COHORT_ALIASES.items():
-        if alias.lower().startswith(q) or q in alias.lower():
-            if canon in available_labels: hits.append(canon)
-    for name in available_labels:
-        if name.lower().startswith(q) or q in name.lower(): hits.append(name)
-    seen, out = set(), []
-    for h in hits:
-        if h not in seen:
-            out.append(h); seen.add(h)
-    return out if out else available_labels
+
+    if q in CANONS_LOWER:
+        cand = CANONS_LOWER[q]
+        return cand if cand in available_labels else None
+    if q in ALIAS_MAP_LOWER:
+        cand = ALIAS_MAP_LOWER[q]
+        return cand if cand in available_labels else None
+
+    starts = [lbl for lbl in available_labels if lbl.lower().startswith(q)]
+    contains = [lbl for lbl in available_labels if q in lbl.lower() and lbl not in starts]
+    if starts: return starts[0]
+    if contains: return contains[0]
+
+    pool = set(available_labels) | set(COHORT_ALIASES.keys()) | set(COHORT_ALIASES.values())
+    to_canon = {s: canonical_label(s) for s in pool}
+    lower_pool = [s.lower() for s in pool]
+    fuzzy = get_close_matches(q, lower_pool, n=5, cutoff=0.55)
+    if fuzzy:
+        best = None; best_score = -1.0
+        for f in fuzzy:
+            orig = next(s for s in pool if s.lower() == f)
+            canon = to_canon[orig]
+            if canon in available_labels:
+                score = SequenceMatcher(None, q, canon.lower()).ratio()
+                if score > best_score:
+                    best, best_score = canon, score
+        if best:
+            return best
+
+    return None
 
 def _top_drug_by_metric(df):
     best_ic50 = (df.dropna(subset=["ic50"])
@@ -237,16 +364,16 @@ def _umap_winner_and_sensitivity(df):
     if len(only_ic):
         winners = winners.reindex(winners.index.union(only_ic))
         winners.loc[only_ic] = "IC50-better"
-        sens = sens.reindex(sens.index.union(only_ic))
+        sens  = sens.reindex(sens.index.union(only_ic))
         sens.loc[only_ic] = ic_pct.reindex(only_ic)
     if len(only_qm):
         winners = winners.reindex(winners.index.union(only_qm))
         winners.loc[only_qm] = "Quantum-better"
-        sens = sens.reindex(sens.index.union(only_qm))
+        sens  = sens.reindex(sens.index.union(only_qm))
         sens.loc[only_qm] = qm_pct.reindex(only_qm)
 
     winners = winners.fillna("Unknown")
-    sens = sens.fillna(0.0).clip(0.0, 1.0)
+    sens    = sens.fillna(0.0).clip(0.0, 1.0)
     return winners, sens
 
 def _knn_density_xyz(df_xyz, k=8):
@@ -297,7 +424,6 @@ def _leaderboard_html(df, value_cols):
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700;800&display=swap');
-
 .stApp {
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(255,146,209,0.25), transparent 60%),
@@ -308,90 +434,60 @@ st.markdown("""
 }
 .block-container { padding-top: 0.6rem; }
 [data-testid="stSidebar"] { display: none; }
-
-.header-bar{
-  position: sticky; top: 0; z-index: 50;
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+.header-bar{ position: sticky; top: 0; z-index: 50; backdrop-filter: blur(8px);
   background: linear-gradient(135deg, rgba(227,161,255,.60), rgba(136,209,255,.60), rgba(127,240,210,.60), rgba(198,163,255,.60));
-  padding-bottom: 6px;
-}
-
-.glass {
-  background: rgba(255,255,255,0.30);
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.25);
-  border-radius: 18px;
-  padding: 1.1rem 1.2rem;
-  box-shadow: 0 8px 28px rgba(7,10,38,0.18);
-  margin-bottom: 16px;
-  overflow: hidden;
-}
+  padding-bottom: 6px; }
+.glass { background: rgba(255,255,255,0.30); backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.25); border-radius: 18px; padding: 1.1rem 1.2rem;
+  box-shadow: 0 8px 28px rgba(7,10,38,0.18); margin-bottom: 16px; overflow: hidden; }
 .chart-spacer { height: 10px; }
-
 .title-wrap { margin: 2px 0 8px 0; }
-.app-title {
-  font-family: "Sora", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
-  font-weight: 800;
-  font-size: clamp(40px, 6.2vw, 64px);
-  line-height: 1.06;
-  letter-spacing: 0.2px;
-  color: #0b1220;
-  text-shadow: 0 2px 16px rgba(255,255,255,0.35);
-  word-break: break-word;
-}
-
-.stApp * { font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"; }
+.app-title { font-family: "Sora"; font-weight: 800; font-size: clamp(40px, 6.2vw, 64px);
+  line-height: 1.06; letter-spacing: 0.2px; color: #0b1220; text-shadow: 0 2px 16px rgba(255,255,255,0.35); }
+.stApp * { font-family: "Inter"; }
 .app-subtitle { font-family: "Sora"; font-weight: 700; font-size: clamp(18px, 2vw, 26px); color: #0b1220; margin-top: 0.25rem; }
 .loaded-badge { color: #059669; font-weight: 700; }
-
 .menu-wrap { min-width: 260px; max-width: 360px; }
-
 input, textarea, select, .stTextInput>div>div>input, .stSelectbox div[data-baseweb="select"]>div {
-  border-radius: 12px !important; background: rgba(255,255,255,0.75) !important;
-}
+  border-radius: 12px !important; background: rgba(255,255,255,0.75) !important; }
 .stSlider>div>div>div>div { background: linear-gradient(90deg, #00e0c6, #7aa7ff) !important; }
 .stSlider [data-baseweb="slider"]>div { background-color: rgba(255,255,255,0.55) !important; }
-
-button, .stButton>button {
-  border-radius: 12px !important; background: linear-gradient(135deg, #00e0c6, #7aa7ff);
-  border: 0; color: #051018; font-weight: 700; box-shadow: 0 6px 18px rgba(15,110,180,0.25);
-}
+button, .stButton>button { border-radius: 12px !important; background: linear-gradient(135deg, #00e0c6, #7aa7ff);
+  border: 0; color: #051018; font-weight: 700; box-shadow: 0 6px 18px rgba(15,110,180,0.25); }
 button:hover, .stButton>button:hover { filter: brightness(1.05); }
-button[kind="secondary"] { white-space: nowrap; }
-
-[data-testid="stDataFrame"]{
-  background: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.55);
-  border-radius: 16px; box-shadow: 0 6px 18px rgba(7,10,38,0.12); overflow: hidden;
-}
-[data-testid="stDataFrame"] div[role="grid"]{ outline:none !important; border:none !important; }
-[data-testid="stDataFrame"] *:focus{ outline:none !important; }
+[data-testid="stDataFrame"]{ background: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 16px; box-shadow: 0 6px 18px rgba(7,10,38,0.12); overflow: hidden; }
 [data-testid="stDataFrame"] > div > div{ overflow:auto !important; }
-[data-testid="stDataFrame"] thead th, [data-testid="stDataFrame"] tbody td { border-right:0 !important; }
-[data-testid="stDataFrame"] > div{ scrollbar-gutter:stable both-edges; }
-
 .footer { font-size: 12px; color: #0b1220; }
+
+/* small legend card next to the 3D map */
+.legend-card {
+  font-size: 12.5px; line-height: 1.35;
+  background: rgba(255,255,255,0.55);
+  border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 14px; padding: 10px 12px;
+  box-shadow: 0 6px 18px rgba(7,10,38,0.10);
+}
+.legend-dot { font-size: 16px; vertical-align: middle; margin-right: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- Data discovery ----------------
 # ---------------- Data discovery ----------------
 files = _list_cohort_files(CACHE_ROOT)
 if not files:
     st.error(f"No caches found in {CACHE_ROOT}. Build them first.")
     st.stop()
 
-# Deduplicate by canonical label; prefer a folder that already matches the canonical name
+# Deduplicate by canonical label; prefer canonical folder name
 path_by_label = {}
 for raw_name, path in files:
     canon = canonical_label(raw_name)
     if (canon not in path_by_label) or (_pretty_name(raw_name).strip().lower() == canon.lower()):
         path_by_label[canon] = path
-
 all_labels = sorted(path_by_label.keys())
 
 # ---------------- Header + Cohort (STICKY) ----------------
 st.markdown('<div class="header-bar">', unsafe_allow_html=True)
-
 hdr_left, hdr_mid, hdr_right = st.columns(header_ratios_for(TITLE))
 
 with hdr_left:
@@ -399,10 +495,8 @@ with hdr_left:
         menu = st.popover("☰", use_container_width=False)
     except Exception:
         menu = st.expander("☰ Filters", expanded=False)
-
 with hdr_mid:
     st.markdown(f'<div class="title-wrap"><div class="app-title">{TITLE}</div></div>', unsafe_allow_html=True)
-
 with hdr_right:
     st.button("Deploy", use_container_width=True)
 
@@ -412,89 +506,164 @@ with row_a:
 with row_b:
     df = _load_cache(path_by_label[cohort])
     st.markdown('<div style="padding-top:6px"><span class="loaded-badge">✅ Data loaded</span></div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True)  # end sticky header-bar
+# ------------- Reset handler (safe) -------------
+def _reset_filters(default_n: int):
+    st.session_state["q_cohort"] = ""
+    st.session_state["min_n"] = default_n
+    st.session_state["drug_query"] = ""
+    st.session_state["drug_pick"] = "(any)"
+    st.session_state["cell_q"] = ""
+    st.rerun()
+
+# ------------- Auto-jump search handler -------------
+def _apply_q_cohort_autojump():
+    """Called when q_cohort changes: typo-tolerant match → switch cohort & clear filters."""
+    query = st.session_state.get("q_cohort", "")
+    best = _best_cohort_match(query, all_labels)
+    if best and st.session_state.get("cohortpick") != best:
+        st.session_state["cohortpick"] = best
+        # Show all rows after jump
+        st.session_state["min_n"] = 1
+        st.session_state["drug_query"] = ""
+        st.session_state["drug_pick"] = "(any)"
+        st.session_state["cell_q"] = ""
+        st.rerun()
 
 # ---------------- Filters inside the popover ----------------
 with menu:
     st.markdown('<div class="menu-wrap">', unsafe_allow_html=True)
-
     st.markdown("### Filters")
-    q_cohort = st.text_input("Search cancer type (e.g., SK, LUAD)", value="", key="q_cohort")
-    _ = _suggest_cohorts(q_cohort, all_labels)
+
+    # Typo-tolerant search that auto-switches cohorts as you type
+    st.text_input(
+        "Search cancer type (e.g., LUAD, leukemai, skin cancer)",
+        value=st.session_state.get("q_cohort",""),
+        key="q_cohort",
+        on_change=_apply_q_cohort_autojump,
+        help="Type any alias or a near-miss; it will auto-jump to the closest cohort and show all rows."
+    )
     st.divider()
 
     _max_n = int(df["n"].max()) if df["n"].notna().any() else 1
     _default_min_n = min(5, max(1, _max_n))
 
-    min_n = st.slider("Min. samples per drug (n)", 1, max(1, _max_n), _default_min_n, key="min_n")
+    try: _max_n = int(_max_n)
+    except Exception: _max_n = 1
+    _max_n = max(1, _max_n)
 
-    all_drugs = sorted(set(df["DRUG_NAME"].dropna().astype(str)))
+    _default = _default_min_n if _default_min_n is not None else 5
+    try: _default = int(_default)
+    except Exception: _default = 5
+    if isinstance(_default, float) and np.isnan(_default): _default = 5
+    default_n = int(np.clip(_default, 1, _max_n))
+
+    # Clamp existing slider value if it's now out-of-bounds
+    if "min_n" in st.session_state:
+        try: current = int(st.session_state["min_n"])
+        except Exception: current = default_n
+        if not (1 <= current <= _max_n):
+            st.session_state["min_n"] = default_n
+
+    if _max_n <= 1:
+        st.session_state["min_n"] = 1
+        st.caption("Only one sample per drug available in this cohort → using n = 1")
+        min_n = 1
+    else:
+        min_n = st.slider(
+            "Min. samples per drug (n)",
+            min_value=1,
+            max_value=int(_max_n),
+            value=int(st.session_state.get("min_n", default_n)),
+            step=1,
+            key="min_n",
+        )
+
+    all_drugs  = sorted(set(df["DRUG_NAME"].dropna().astype(str)))
     drug_query = st.text_input("Search drug name", key="drug_query")
     drug_suggest = _drug_suggestions(drug_query, all_drugs, limit=30)
-    drug_pick = st.selectbox("Pick a drug (optional)", ["(any)"] + drug_suggest, index=0, key="drug_pick")
-    cell_q = st.text_input("Search DepMap ID", key="cell_q")
+    drug_pick  = st.selectbox("Pick a drug (optional)", ["(any)"] + drug_suggest, index=0, key="drug_pick")
+    cell_q     = st.text_input("Search DepMap ID", key="cell_q")
     st.caption("Selections apply instantly.")
 
     cA, cB = st.columns(2)
     with cA:
-        if st.button("Reset filters"):
-            st.session_state["q_cohort"] = ""
-            st.session_state["min_n"] = _default_min_n
-            st.session_state["drug_query"] = ""
-            st.session_state["drug_pick"] = "(any)"
-            st.session_state["cell_q"] = ""
-            st.experimental_rerun()
-
+        st.button("Reset filters", on_click=_reset_filters, args=(default_n,))
     with cB:
         top_ic50 = _rank_ic50(df).head(DEFAULT_TOPK).rename(columns={"IC50_MEDIAN": "VALUE"})
         top_qm   = _rank_quantum(df).head(DEFAULT_TOPK).rename(columns={"Q_MEAN": "VALUE"})
-        out = pd.concat(
-            [
-                top_ic50.assign(LIST="IC50"),
-                top_qm.assign(LIST="Quantum"),
-            ],
-            ignore_index=True
-        )
+        out = pd.concat([top_ic50.assign(LIST="IC50"), top_qm.assign(LIST="Quantum")], ignore_index=True)
         csv_bytes = out.to_csv(index=False).encode("utf-8")
         st.download_button("Download top lists CSV", data=csv_bytes, file_name="toplists.csv", mime="text/csv")
-
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------------- Apply filters ----------------
+# ---------------- Apply filters (robust) ----------------
 dfv = df.copy()
-dfv = dfv[dfv["n"] >= st.session_state.get("min_n", _default_min_n)]
+n_series = pd.to_numeric(dfv["n"], errors="coerce").fillna(1).astype(int).clip(lower=1)
+min_n_current = int(st.session_state.get("min_n", 1))
+mask = n_series >= min_n_current
+
 if st.session_state.get("drug_pick", "(any)") != "(any)":
-    dfv = dfv[dfv["DRUG_NAME"].astype(str) == st.session_state["drug_pick"]]
+    mask &= (dfv["DRUG_NAME"].astype(str) == st.session_state["drug_pick"])
 elif st.session_state.get("drug_query", ""):
-    dfv = dfv[dfv["DRUG_NAME"].astype(str).str.lower().str.contains(st.session_state["drug_query"].strip().lower())]
+    q = st.session_state["drug_query"].strip().lower()
+    mask &= dfv["DRUG_NAME"].astype(str).str.lower().str.contains(q)
+
 if st.session_state.get("cell_q", ""):
-    dfv = dfv[dfv["DepMap_ID"].astype(str).str.upper().str.contains(st.session_state["cell_q"].strip().upper())]
+    qcell = st.session_state["cell_q"].strip().upper()
+    mask &= dfv["DepMap_ID"].astype(str).str.upper().str.contains(qcell)
+
+dfv = dfv[mask].copy()
+if dfv.empty:
+    st.warning("No rows match the current filters for this cohort. Filters have been relaxed to show all rows.")
+    dfv = df.copy()
 
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
-ic50_rows = (
-    dfv.dropna(subset=["ic50"])
-       .sort_values(["DepMap_ID","ic50"], ascending=[True,True])
-       .groupby("DepMap_ID").head(1)
-       .sort_values("ic50")
-       .head(int(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]]
-)
-qm_rows = (
-    dfv.dropna(subset=["quantum_minima"])
-       .sort_values(["DepMap_ID","quantum_minima"], ascending=[True,True])
-       .groupby("DepMap_ID").head(1)
-       .sort_values("quantum_minima")
-       .head(int(DEFAULT_TOPK))[["DepMap_ID","DRUG_NAME","quantum_minima","Q_MEAN","n"]]
-)
+# IC50 shortlist with fallbacks (all taken from cached **raw** dataset)
+sub_ic = dfv.dropna(subset=["ic50"]).copy()
+if sub_ic.empty and dfv["ic50_rank"].notna().any():
+    sub_ic = dfv.dropna(subset=["ic50_rank"]).copy()
+    sub_ic = sub_ic.sort_values(["DepMap_ID","ic50_rank"], ascending=[True,True])
+    ic50_rows = (sub_ic.groupby("DepMap_ID").head(1)
+                        .sort_values("ic50_rank")
+                        .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50_rank","n"]])
+else:
+    ic50_rows = (sub_ic.sort_values(["DepMap_ID","ic50"], ascending=[True,True])
+                      .groupby("DepMap_ID").head(1)
+                      .sort_values("ic50")
+                      .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]])
+
+# Quantum shortlist with fallback to Q_MEAN (all taken from cached **raw** dataset)
+sub_qm = dfv.dropna(subset=["quantum_minima"]).copy()
+if sub_qm.empty and dfv["Q_MEAN"].notna().any():
+    sub_qm = dfv.dropna(subset=["Q_MEAN"]).copy()
+    qm_rows = (sub_qm.sort_values(["DepMap_ID","Q_MEAN"], ascending=[True,True])
+                      .groupby("DepMap_ID").head(1)
+                      .sort_values("Q_MEAN")
+                      .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","Q_MEAN","n"]])
+else:
+    qm_rows = (sub_qm.sort_values(["DepMap_ID","quantum_minima"], ascending=[True,True])
+                     .groupby("DepMap_ID").head(1)
+                     .sort_values("quantum_minima")
+                     .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","quantum_minima","Q_MEAN","n"]])
 
 cL2, cR2 = st.columns(2, gap="large")
 with cL2:
-    st.caption("Best per sample by IC50 (lower is better)")
+    st.caption(
+        "Best per sample by IC50 (lower is better). "
+        "Values are read directly from the cached raw dataset. "
+        "If an IC50 value is missing in the raw data, its IC50 rank from the raw data is shown."
+    )
     st.dataframe(ic50_rows, use_container_width=True, hide_index=True, height=420)
 with cR2:
-    st.caption("Best per sample by Quantum minima (lower is better)")
+    st.caption(
+        "Best per sample by Quantum minima (lower is better). "
+        "Values are read directly from the cached raw dataset. "
+        "If a minima value is missing in the raw data, its Q_MEAN from the raw data is shown."
+    )
     st.dataframe(qm_rows, use_container_width=True, hide_index=True, height=420)
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -513,36 +682,23 @@ with colR:
         unsafe_allow_html=True
     )
 
-# ---------------- Scatter ----------------
-st.markdown('<div class="glass"><div class="app-subtitle">Scatter — compare measures (subsampled)</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
-plot_df = dfv.dropna(subset=["quantum_minima","ic50"]).copy()
-if len(plot_df) >= 10:
-    plot_df = plot_df.sample(min(len(plot_df), MAX_SCATTER), random_state=42)
-    plot_df["winner"] = np.where(
-        plot_df["ic50"].rank(method="dense") < plot_df["quantum_minima"].rank(method="dense"),
-        "IC50-better", "Quantum-better"
-    )
-    fig = px.scatter(
-        plot_df, x="quantum_minima", y="ic50",
-        color="winner",
-        color_discrete_map={"IC50-better":"#e53935","Quantum-better":"#1e88e5"},
-        hover_data=["DRUG_NAME","DepMap_ID","Q_MEAN","n"],
-        title="Lower-left is best; color shows which metric wins per row",
-    )
-    fig.update_traces(marker=dict(size=7, opacity=0.9, line=dict(width=0)))
-    fig.update_layout(margin=dict(l=0,r=0,t=40,b=0), legend_title_text="")
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Not enough rows with both minima and IC50 to plot.")
-st.markdown('</div>', unsafe_allow_html=True)
-
 # ---------------- Topographic UMAP ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Topographic UMAP — high sensitivity</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
-emb = _load_or_build_umap_cached(cohort)
+# now always returns something: cached → helpers → fallback
+emb, emb_source = _load_or_build_umap_cached(cohort, df)
+
 if emb is None or emb.empty:
-    st.info("UMAP not available. (If helpers are present, it will auto-build once.)")
+    st.info("UMAP embedding could not be built.")
 else:
+    # show source note
+    if emb_source == "fallback":
+        st.caption("Embedding source: fallback from cached drug-response features (no gene-expression UMAP available).")
+    elif emb_source == "helpers":
+        st.caption("Embedding source: built from gene-expression (UMAP).")
+    elif emb_source == "cached":
+        st.caption("Embedding source: loaded precomputed embedding.")
+
     winners, sens = _umap_winner_and_sensitivity(dfv)
     ic50_drug, qm_drug = _top_drug_by_metric(dfv)
 
@@ -552,7 +708,7 @@ else:
     emb2 = emb2.dropna(subset=["x","y","z"])
 
     emb2["winner"] = winners.reindex(emb2.index).fillna("Unknown")
-    emb2["sens"] = sens.reindex(emb2.index).fillna(0.0).clip(0.0, 1.0)
+    emb2["sens"]   = sens.reindex(emb2.index).fillna(0.0).clip(0.0, 1.0)
 
     best_ic = ic50_drug.reindex(emb2.index).astype(object)
     best_qm = qm_drug.reindex(emb2.index).astype(object)
@@ -578,36 +734,39 @@ else:
     q90 = np.quantile(emb2["sens"], 0.90) if len(emb2) else 1.0
     hot = emb2[emb2["sens"] >= q90]
     if len(hot):
-        halo_size = float(emb2["size"].max() * 1.8)
-        halo_text = (
-            "DepMap_ID: %{customdata[0]}<br>"
-            "Winner: %{customdata[1]}<br>"
-            "Top drug: %{customdata[2]}<br>"
-            "Confidence (sens): %{customdata[3]:.2f}<br>"
-            "Local density: %{customdata[4]:.2f}"
-        )
         fig3d.add_trace(go.Scatter3d(
             x=hot["x"], y=hot["y"], z=hot["z"],
             mode="markers",
-            marker=dict(size=halo_size, opacity=0.20, color=hot["winner"].map(color_map)),
-            customdata=np.stack([
-                hot.index.to_numpy(),
-                hot["winner"].to_numpy(),
-                hot["top_drug"].to_numpy(),
-                hot["sens"].to_numpy(),
-                hot["density_pct"].to_numpy()
-            ], axis=1),
-            hovertemplate=halo_text,
+            marker=dict(size=float(emb2["size"].max() * 1.8), opacity=0.20, color=hot["winner"].map(color_map)),
+            customdata=np.stack([hot.index.to_numpy(), hot["winner"].to_numpy(), hot["top_drug"].to_numpy(),
+                                 hot["sens"].to_numpy(), hot["density_pct"].to_numpy()], axis=1),
+            hovertemplate=("DepMap_ID: %{customdata[0]}<br>Winner: %{customdata[1]}<br>"
+                           "Top drug: %{customdata[2]}<br>Confidence (sens): %{customdata[3]:.2f}<br>"
+                           "Local density: %{customdata[4]:.2f}"),
             name="High-sensitivity hotspot",
             showlegend=False,
         ))
 
-    fig3d.update_layout(
-        margin=dict(l=0, r=0, t=40, b=0),
-        legend_title_text="",
-        title=f"{cohort} — Topographic UMAP (two-tone, high-sensitivity regions)"
-    )
-    st.plotly_chart(fig3d, use_container_width=True)
+    # ===== Legend & metrics on the RIGHT =====
+    col_plot, col_info = st.columns([0.70, 0.30], gap="large")
+    with col_plot:
+        st.plotly_chart(fig3d, use_container_width=True)
+    with col_info:
+        st.markdown(
+            f"""
+            <div class="legend-card">
+              <div style="font-weight:700; margin-bottom:6px;">Legend & metrics</div>
+              <div><span class="legend-dot" style="color:{color_map['IC50-better']}">●</span><b>IC50-better</b>: wet-lab IC50 suggests stronger response.</div>
+              <div><span class="legend-dot" style="color:{color_map['Quantum-better']}">●</span><b>Quantum-better</b>: quantum minima suggests stronger response.</div>
+              <div><span class="legend-dot" style="color:{color_map['Unknown']}">●</span><b>Unknown</b>: not enough data to decide.</div>
+              <hr style="opacity:.3; margin:8px 0;">
+              <div><b>Confidence (sens)</b>: 0–1 score of how clearly the winner beats the other for that sample (rank-based percentile). Bigger dot = higher.</div>
+              <div style="margin-top:4px;"><b>Density</b>: 0–1 local crowding in the embedding (k-nearest neighbors). Higher = more similar neighbors nearby.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------- Footer ----------------

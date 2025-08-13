@@ -747,8 +747,10 @@ else:
             showlegend=False,
         ))
 
-    # Legend & metrics card next to the plot
-    col_info, col_plot = st.columns([0.30, 0.70], gap="large")
+    # ===== Legend & metrics on the RIGHT =====
+    col_plot, col_info = st.columns([0.70, 0.30], gap="large")
+    with col_plot:
+        st.plotly_chart(fig3d, use_container_width=True)
     with col_info:
         st.markdown(
             f"""
@@ -764,8 +766,6 @@ else:
             """,
             unsafe_allow_html=True,
         )
-    with col_plot:
-        st.plotly_chart(fig3d, use_container_width=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 

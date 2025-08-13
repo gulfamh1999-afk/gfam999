@@ -427,7 +427,50 @@ with menu:
     _max_n = int(df["n"].max()) if df["n"].notna().any() else 1
     _default_min_n = min(5, max(1, _max_n))
 
-    min_n = st.slider("Min. samples per drug (n)", 1, max(1, _max_n), _default_min_n, key="min_n")
+# ---- compute per-cohort maxima safely ----
+import numpy as np
+
+# _max_n should be the max available per-drug *after* all filters
+# Make it a clean positive int
+try:
+    _max_n = int(_max_n)
+except Exception:
+    _max_n = 1
+_max_n = max(1, _max_n)
+
+# Pick a sane default and clamp it into [1, _max_n]
+_default = _default_min_n if _default_min_n is not None else 5
+try:
+    _default = int(_default)
+except Exception:
+    _default = 5
+if np.isnan(_default):  # in case it came from a numpy calc
+    _default = 5
+default_n = int(np.clip(_default, 1, _max_n))
+
+# Optional: if an old session_state value is now out-of-bounds (after a new cohort),
+# reset it to the clamped default to prevent StreamlitAPIException.
+if "min_n" in st.session_state:
+    try:
+        current = int(st.session_state["min_n"])
+    except Exception:
+        current = default_n
+    if not (1 <= current <= _max_n):
+        st.session_state["min_n"] = default_n
+
+# Final: strictly-typed slider
+min_n = st.slider(
+    "Min. samples per drug (n)",
+    min_value=1,
+    max_value=_max_n,
+    value=default_n,
+    step=1,
+    key="min_n",
+)
+
+# Optional tiny debug reveal (helpful on Cloud)
+with st.expander("Debug (slider bounds)"):
+    st.write({"_max_n": _max_n, "_default_min_n": _default_min_n, "default_n": default_n, "session_min_n": st.session_state.get("min_n")})
 
     all_drugs = sorted(set(df["DRUG_NAME"].dropna().astype(str)))
     drug_query = st.text_input("Search drug name", key="drug_query")
@@ -617,3 +660,4 @@ st.markdown("""
   This interactive is provided for pitch/demo purposes only. It summarizes public cell-line data and experimental metrics (IC50) alongside simulated quantum minima scores <em>(equation-backed & reproducible)</em>. Values are not medical advice and should not be used for patient treatment decisions. Any interpretations require independent validation in appropriate wet-lab and clinical settings. © 2025 Gfam Quantum.
 </div>
 """, unsafe_allow_html=True)
+

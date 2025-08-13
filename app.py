@@ -1,14 +1,14 @@
 # app.py
 # 🔬 Quantum Kernel DevKit v1.3.0 — Cancer Atlas (IC50 vs Quantum Minima)
 
-import os, re, io
+import os, re
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 
 ROOT = Path(__file__).resolve().parent
 DATA  = ROOT / "data"
@@ -71,6 +71,8 @@ COHORT_ALIASES = {
 ALIAS_MAP_LOWER = {k.lower(): v for k, v in COHORT_ALIASES.items()}
 CANONS_LOWER    = {v.lower(): v for v in COHORT_ALIASES.values()}
 
+def _pretty_name(s): return re.sub(r"_+", " ", s)
+
 def canonical_label(name: str) -> str:
     n = _pretty_name(name).strip()
     key = n.lower()
@@ -78,13 +80,12 @@ def canonical_label(name: str) -> str:
     if key in ALIAS_MAP_LOWER: return ALIAS_MAP_LOWER[key]
     return n
 
-# ---------------- Utilities ----------------
-def _pretty_name(s): return re.sub(r"_+", " ", s)
-
+# ---------------- Parquet discovery & loading ----------------
 def _looks_like_umap_df(df: pd.DataFrame) -> bool:
     cols = set(c.lower() for c in df.columns)
     has_xyz = {"x","y","z"}.issubset(cols)
     has_metrics = any(c in cols for c in ["ic50","quantum_minima","q_mean","ic50_rank"])
+    # treat as UMAP if it has xyz but no metrics
     return has_xyz and not has_metrics
 
 def _find_non_umap_parquet(folder: str) -> str | None:
@@ -106,6 +107,7 @@ def _find_non_umap_parquet(folder: str) -> str | None:
 
 @st.cache_data(show_spinner=False)
 def _list_cohort_files(root):
+    """Return (folder_name, parquet_path) preferring non-UMAP parquets."""
     out = []
     if not os.path.isdir(root): return out
     for d in os.listdir(root):
@@ -215,6 +217,7 @@ def _load_or_build_umap_cached(label):
         pass
     return emb
 
+# ---------------- Analytics helpers ----------------
 def _rank_ic50(df):
     sub = df[df["ic50"].notna()].copy()
     if sub.empty: return pd.DataFrame(columns=["DRUG_NAME","IC50_MEDIAN","n"])
@@ -236,40 +239,51 @@ def _drug_suggestions(query, all_drugs, limit=30):
     contains = [d for d in all_drugs if q in str(d).lower() and d not in starts]
     return (starts + contains)[:limit]
 
-def _suggest_cohorts_typo_tolerant(query: str, available_labels: list[str]) -> list[str]:
-    """Return best canonical matches even for misspellings."""
-    if not query:
-        return available_labels
+def _best_cohort_match(query: str, available_labels: list[str]) -> str | None:
+    """Typo-tolerant best match → canonical label in available_labels."""
+    if not query: return None
     q = query.strip().lower()
 
-    # pool = canonical labels + aliases
-    pool = set(available_labels)
-    pool.update(COHORT_ALIASES.keys())
-    pool.update(COHORT_ALIASES.values())
+    # 1) exact/canonical hits
+    if q in CANONS_LOWER:
+        cand = CANONS_LOWER[q]
+        return cand if cand in available_labels else None
+    if q in ALIAS_MAP_LOWER:
+        cand = ALIAS_MAP_LOWER[q]
+        return cand if cand in available_labels else None
 
-    # simple contains + startswith
-    hits = [lbl for lbl in pool if q in lbl.lower() or lbl.lower().startswith(q)]
+    # 2) startswith / contains
+    starts = [lbl for lbl in available_labels if lbl.lower().startswith(q)]
+    contains = [lbl for lbl in available_labels if q in lbl.lower() and lbl not in starts]
+    if starts: return starts[0]
+    if contains: return contains[0]
 
-    # add fuzzy (difflib)
-    fuzzy = get_close_matches(q, [s.lower() for s in pool], n=5, cutoff=0.55)
-    hits += [s for s in pool if s.lower() in fuzzy]
+    # 3) fuzzy over (aliases + canon)
+    pool = set(available_labels) | set(COHORT_ALIASES.keys()) | set(COHORT_ALIASES.values())
+    # map pool item -> canonical
+    to_canon = {s: canonical_label(s) for s in pool}
+    lower_pool = [s.lower() for s in pool]
+    fuzzy = get_close_matches(q, lower_pool, n=5, cutoff=0.55)
+    if fuzzy:
+        # pick highest SequenceMatcher ratio among distinct canon labels that exist
+        best = None; best_score = -1.0
+        for f in fuzzy:
+            orig = next(s for s in pool if s.lower() == f)
+            canon = to_canon[orig]
+            if canon in available_labels:
+                score = SequenceMatcher(None, q, canon.lower()).ratio()
+                if score > best_score:
+                    best, best_score = canon, score
+        if best:
+            return best
 
-    # canonicalize & dedupe, keep order
-    out, seen = [], set()
-    for h in hits or pool:
-        canon = canonical_label(h)
-        if canon in available_labels and canon not in seen:
-            out.append(canon); seen.add(canon)
-
-    # ensure something
-    return out or available_labels
+    return None
 
 def _top_drug_by_metric(df):
     best_ic50 = (df.dropna(subset=["ic50"])
                    .sort_values(["DepMap_ID","ic50"], ascending=[True,True])
                    .groupby("DepMap_ID").first())
     ic50_drug = best_ic50["DRUG_NAME"] if "DRUG_NAME" in best_ic50.columns else pd.Series(dtype=object)
-
     best_qm = (df.dropna(subset=["quantum_minima"])
                  .sort_values(["DepMap_ID","quantum_minima"], ascending=[True,True])
                  .groupby("DepMap_ID").first())
@@ -416,7 +430,7 @@ if not files:
     st.error(f"No caches found in {CACHE_ROOT}. Build them first.")
     st.stop()
 
-# Deduplicate by canonical label
+# Deduplicate by canonical label; prefer canonical folder name
 path_by_label = {}
 for raw_name, path in files:
     canon = canonical_label(raw_name)
@@ -438,6 +452,7 @@ with hdr_mid:
 with hdr_right:
     st.button("Deploy", use_container_width=True)
 
+# The main cohort select (value stored in session_state["cohortpick"])
 row_a, row_b = st.columns([0.72, 0.28])
 with row_a:
     cohort = st.selectbox("Pick cohort", all_labels, index=0, label_visibility="collapsed", key="cohortpick")
@@ -448,7 +463,6 @@ st.markdown('</div>', unsafe_allow_html=True)  # end sticky header-bar
 
 # ------------- Reset handler (safe) -------------
 def _reset_filters(default_n: int):
-    # Only touch keys that exist or are ours
     st.session_state["q_cohort"] = ""
     st.session_state["min_n"] = default_n
     st.session_state["drug_query"] = ""
@@ -456,47 +470,52 @@ def _reset_filters(default_n: int):
     st.session_state["cell_q"] = ""
     st.rerun()
 
+# ------------- Auto-jump search handler -------------
+def _apply_q_cohort_autojump():
+    """Called when q_cohort changes: typo-tolerant match → switch cohort & clear filters."""
+    query = st.session_state.get("q_cohort", "")
+    best = _best_cohort_match(query, all_labels)
+    if best and st.session_state.get("cohortpick") != best:
+        st.session_state["cohortpick"] = best
+        # Show all rows after jump
+        st.session_state["min_n"] = 1
+        st.session_state["drug_query"] = ""
+        st.session_state["drug_pick"] = "(any)"
+        st.session_state["cell_q"] = ""
+        st.rerun()
+
 # ---------------- Filters inside the popover ----------------
 with menu:
     st.markdown('<div class="menu-wrap">', unsafe_allow_html=True)
     st.markdown("### Filters")
 
-    # Typo-tolerant search → suggestions + jump
-    q_cohort = st.text_input("Search cancer type (e.g., LUAD, leukemai)", value=st.session_state.get("q_cohort",""), key="q_cohort")
-    sug_labels = _suggest_cohorts_typo_tolerant(q_cohort, all_labels)
-    pick_sug = st.selectbox("Matches", sug_labels, index=0, key="sug_pick")
-    col_go1, col_go2 = st.columns([0.5, 0.5])
-    with col_go1:
-        if st.button("Jump to cohort"):
-            st.session_state["cohortpick"] = pick_sug   # switch the main selectbox
-            st.rerun()
-    with col_go2:
-        st.caption("Typos auto-correct (e.g., ‘leukemai’ → Leukemia).")
+    # Typo-tolerant search that auto-switches cohorts as you type
+    st.text_input(
+        "Search cancer type (e.g., LUAD, leukemai, skin cancer)",
+        value=st.session_state.get("q_cohort",""),
+        key="q_cohort",
+        on_change=_apply_q_cohort_autojump,
+        help="Type any alias or a near-miss; it will auto-jump to the closest cohort and show all rows."
+    )
     st.divider()
 
     _max_n = int(df["n"].max()) if df["n"].notna().any() else 1
     _default_min_n = min(5, max(1, _max_n))
 
-    try:
-        _max_n = int(_max_n)
-    except Exception:
-        _max_n = 1
+    try: _max_n = int(_max_n)
+    except Exception: _max_n = 1
     _max_n = max(1, _max_n)
 
     _default = _default_min_n if _default_min_n is not None else 5
-    try:
-        _default = int(_default)
-    except Exception:
-        _default = 5
-    if isinstance(_default, float) and np.isnan(_default):
-        _default = 5
+    try: _default = int(_default)
+    except Exception: _default = 5
+    if isinstance(_default, float) and np.isnan(_default): _default = 5
     default_n = int(np.clip(_default, 1, _max_n))
 
+    # Clamp existing slider value if it's now out-of-bounds
     if "min_n" in st.session_state:
-        try:
-            current = int(st.session_state["min_n"])
-        except Exception:
-            current = default_n
+        try: current = int(st.session_state["min_n"])
+        except Exception: current = default_n
         if not (1 <= current <= _max_n):
             st.session_state["min_n"] = default_n
 
@@ -509,18 +528,10 @@ with menu:
             "Min. samples per drug (n)",
             min_value=1,
             max_value=int(_max_n),
-            value=int(default_n if st.session_state.get("min_n") is None else st.session_state["min_n"]),
+            value=int(st.session_state.get("min_n", default_n)),
             step=1,
             key="min_n",
         )
-
-    with st.expander("Debug (slider bounds)"):
-        st.write({
-            "_max_n": _max_n,
-            "_default_min_n": _default_min_n,
-            "default_n": default_n,
-            "session_min_n": st.session_state.get("min_n")
-        })
 
     all_drugs  = sorted(set(df["DRUG_NAME"].dropna().astype(str)))
     drug_query = st.text_input("Search drug name", key="drug_query")
@@ -561,22 +572,10 @@ if dfv.empty:
     st.warning("No rows match the current filters for this cohort. Filters have been relaxed to show all rows.")
     dfv = df.copy()
 
-# ---------- Cohort diagnostics ----------
-with st.expander("Cohort diagnostics"):
-    st.write({
-        "rows_all": int(len(df)),
-        "rows_after_filters": int(len(dfv)),
-        "non_null_ic50": int(dfv["ic50"].notna().sum()),
-        "non_null_qmin": int(dfv["quantum_minima"].notna().sum()),
-        "non_null_ic50_rank": int(dfv["ic50_rank"].notna().sum()),
-        "unique_drugs": int(dfv["DRUG_NAME"].nunique()),
-        "source_path": path_by_label[cohort]
-    })
-    st.write("Head:", dfv.head(5))
-
 # ---------------- Per-sample shortlists ----------------
 st.markdown('<div class="glass"><div class="app-subtitle">Per-sample shortlists</div><div class="chart-spacer"></div>', unsafe_allow_html=True)
 
+# IC50 shortlist with fallbacks
 sub_ic = dfv.dropna(subset=["ic50"]).copy()
 if sub_ic.empty and dfv["ic50_rank"].notna().any():
     sub_ic = dfv.dropna(subset=["ic50_rank"]).copy()
@@ -590,6 +589,7 @@ else:
                       .sort_values("ic50")
                       .head(DEFAULT_TOPK)[["DepMap_ID","DRUG_NAME","ic50","ic50_rank","n"]])
 
+# Quantum shortlist with fallback to Q_MEAN
 sub_qm = dfv.dropna(subset=["quantum_minima"]).copy()
 if sub_qm.empty and dfv["Q_MEAN"].notna().any():
     sub_qm = dfv.dropna(subset=["Q_MEAN"]).copy()
